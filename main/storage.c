@@ -65,8 +65,23 @@ void count_csv_header(char *out, size_t out_len)
         }
     }
     if (off + 1 < out_len) {
-        snprintf(out + off, out_len - off, "\n");
+        snprintf(out + off, out_len - off, ",sequence,uptime_ms,interval_ms,physics_valid,wifi_off,hv_settled,time_set,env_valid,temp_c,pressure_hpa\n");
     }
+}
+
+// Both HTTP downloads and SD logs use the same appended validity columns.
+void count_csv_record(const count_record_t *r, char *out, size_t size)
+{
+    char iso[32], env[64] = ",";
+    csv_time_string(r->epoch, iso, sizeof(iso));
+    if (r->env_valid) snprintf(env, sizeof(env), "%.3f,%.3f", r->temp_c, r->pressure_hpa);
+    size_t off = snprintf(out, size, "%lld,%s", (long long)r->epoch, iso);
+    for (size_t i = 0; i < COUNT_CHANNELS && off < size; ++i)
+        off += snprintf(out + off, size - off, ",%" PRIu32, r->counts[i]);
+    if (off < size) snprintf(out + off, size - off,
+        ",%" PRIu32 ",%" PRId64 ",%" PRIu32 ",%d,%d,%d,%d,%d,%s\n",
+        r->sequence, r->uptime_ms, r->interval_ms, r->physics_valid,
+        r->wifi_off, r->hv_settled, r->time_set, r->env_valid, env);
 }
 
 // Construct the full SD path for either the muon or environment file, including
@@ -161,7 +176,7 @@ static esp_err_t sd_refresh_one_path_locked(char *path, size_t path_len, const c
 // slower environment-average file.
 esp_err_t sd_refresh_log_path_locked(void)
 {
-    char count_header[192];
+    char count_header[384];
     count_csv_header(count_header, sizeof(count_header));
     esp_err_t ret = sd_refresh_one_path_locked(
         s_log_path, sizeof(s_log_path), "muon", count_header);
@@ -238,6 +253,7 @@ esp_err_t init_sd_card(void)
 // Append one completed one-minute detector record to the active muon CSV file.
 void sd_append_record(const count_record_t *record)
 {
+    portENTER_CRITICAL(&s_state_mux);s_sd_write_ok=false;portEXIT_CRITICAL(&s_state_mux);
     if (!s_sd_mutex) {
         return;
     }
@@ -254,18 +270,14 @@ void sd_append_record(const count_record_t *record)
         return;
     }
 
-    char iso[32];
-    csv_time_string(record->epoch, iso, sizeof(iso));
-    // Keep the SD CSV compatible with the Pi-era log style: epoch, ISO time,
-    // then the detector channels. Uptime stays internal only.
-    fprintf(f, "%lld,%s", (long long)record->epoch, iso);
-    for (size_t i = 0; i < COUNT_CHANNELS; i++) {
-        fprintf(f, ",%" PRIu32, record->counts[i]);
-    }
-    fputc('\n', f);
-    fflush(f);
-    fsync(fileno(f));
-    fclose(f);
+    char line[384];
+    count_csv_record(record, line, sizeof(line));
+    bool ok=fputs(line,f)>=0;
+    if(fflush(f)!=0)ok=false;
+    if(fsync(fileno(f))!=0)ok=false;
+    if(fclose(f)!=0)ok=false;
+    portENTER_CRITICAL(&s_state_mux);s_sd_write_ok=ok;portEXIT_CRITICAL(&s_state_mux);
+    if(!ok)ESP_LOGE(TAG,"SD count write/flush failed");
     xSemaphoreGive(s_sd_mutex);
 }
 

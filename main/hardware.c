@@ -1,5 +1,9 @@
 #include "app_common.h"
 
+static SemaphoreHandle_t detector_mutex;
+void detector_lock(void) { xSemaphoreTakeRecursive(detector_mutex,portMAX_DELAY); }
+void detector_unlock(void) { xSemaphoreGiveRecursive(detector_mutex); }
+
 // Take the shared SPI mutex before talking to FPGA, HV, or legacy SPI DAC.
 static void spi_lock(void)
 {
@@ -141,6 +145,8 @@ static esp_err_t spi_send(spi_device_handle_t dev, const uint8_t *data, size_t l
 // readout profile.
 esp_err_t init_spi(void)
 {
+    detector_mutex=xSemaphoreCreateRecursiveMutex();
+    if(!detector_mutex)return ESP_ERR_NO_MEM;
     s_spi_mutex = xSemaphoreCreateMutex();
     ESP_RETURN_ON_FALSE(s_spi_mutex, ESP_ERR_NO_MEM, TAG, "create SPI mutex");
 
@@ -227,7 +233,7 @@ static esp_err_t ice40_clear_locked(void)
 }
 
 // Clock the embedded bitstream into the iCE40 and verify that DONE rises.
-esp_err_t program_fpga(void)
+static esp_err_t program_fpga_impl(void)
 {
     const size_t embedded_len = fpga_bin_end - fpga_bin_start;
 #if READOUT_PROFILE_OCT2025
@@ -322,7 +328,7 @@ static esp_err_t dacx578_write_channel(uint8_t ch, uint16_t code10)
 }
 
 // Set one DAC channel and mirror the value in RAM for status and compensation.
-esp_err_t dac_set_channel(uint8_t ch, uint16_t value)
+static esp_err_t dac_set_channel_impl(uint8_t ch, uint16_t value)
 {
     esp_err_t ret;
 #if READOUT_PROFILE_OCT2025
@@ -339,7 +345,7 @@ esp_err_t dac_set_channel(uint8_t ch, uint16_t value)
 }
 
 // Load the startup DAC values for SiPM bias and threshold channels.
-esp_err_t dac_zero_channels(void)
+static esp_err_t dac_zero_channels_impl(void)
 {
 #if READOUT_PROFILE_OCT2025
     ESP_RETURN_ON_ERROR(init_i2c_bus(), TAG, "init I2C for DACx578");
@@ -355,9 +361,11 @@ esp_err_t dac_zero_channels(void)
     }
     for (uint8_t ch = 0; ch < 4; ch++) {
         ESP_RETURN_ON_ERROR(dacx578_write_channel(ch, STARTUP_DAC_CODE), TAG, "set DACx578 startup channel");
+        portENTER_CRITICAL(&s_state_mux);s_dac_codes[ch]=STARTUP_DAC_CODE;portEXIT_CRITICAL(&s_state_mux);
     }
     for (uint8_t ch = 4; ch < 8; ch++) {
         ESP_RETURN_ON_ERROR(dacx578_write_channel(ch, STARTUP_DAC_THRESHOLD_CODE), TAG, "set DACx578 threshold channel");
+        portENTER_CRITICAL(&s_state_mux);s_dac_codes[ch]=STARTUP_DAC_THRESHOLD_CODE;portEXIT_CRITICAL(&s_state_mux);
     }
     ESP_LOGI(TAG, "DACx578 channels 0-3 set to 0x%03x, channels 4-7 set to 0x%03x",
              STARTUP_DAC_CODE, STARTUP_DAC_THRESHOLD_CODE);
@@ -409,13 +417,14 @@ bool counting_is_enabled(void)
 
 // Change HV safely and enforce the quiet settling interval before counting is
 // allowed again.
-esp_err_t hv_write_and_settle(uint8_t value)
+static esp_err_t hv_write_and_settle_impl(uint8_t value)
 {
     // Counts taken while the bias is moving are mostly noise, so every HV change
     // gates counting off, clears the live counters, and waits before recording.
     portENTER_CRITICAL(&s_state_mux);
     s_counting_enabled = false;
     s_hv_settle_until_ms = 0;
+    s_measurement_generation++;
     portEXIT_CRITICAL(&s_state_mux);
     clear_live_counts();
 
@@ -438,4 +447,43 @@ esp_err_t hv_write_and_settle(uint8_t value)
     portEXIT_CRITICAL(&s_state_mux);
     ESP_LOGI(TAG, "HV settled; counters cleared and counting enabled");
     return ESP_OK;
+}
+
+esp_err_t program_fpga(void) {
+    detector_lock();
+    portENTER_CRITICAL(&s_state_mux); s_measurement_generation++; portEXIT_CRITICAL(&s_state_mux);
+    esp_err_t ret=program_fpga_impl();
+    portENTER_CRITICAL(&s_state_mux); s_measurement_generation++; portEXIT_CRITICAL(&s_state_mux);
+    detector_unlock(); return ret;
+}
+
+esp_err_t dac_set_channel(uint8_t ch, uint16_t value) {
+    detector_lock();
+    portENTER_CRITICAL(&s_state_mux); s_measurement_generation++; portEXIT_CRITICAL(&s_state_mux);
+    esp_err_t ret=dac_set_channel_impl(ch,value);
+    portENTER_CRITICAL(&s_state_mux); s_measurement_generation++; portEXIT_CRITICAL(&s_state_mux);
+    detector_unlock(); return ret;
+}
+
+esp_err_t dac_zero_channels(void) {
+    detector_lock();
+    portENTER_CRITICAL(&s_state_mux); s_measurement_generation++; portEXIT_CRITICAL(&s_state_mux);
+    esp_err_t ret=dac_zero_channels_impl();
+    portENTER_CRITICAL(&s_state_mux); s_measurement_generation++; portEXIT_CRITICAL(&s_state_mux);
+    detector_unlock(); return ret;
+}
+
+esp_err_t hv_write_and_settle(uint8_t value) {
+    detector_lock();
+    esp_err_t ret=hv_write_and_settle_impl(value);
+    detector_unlock(); return ret;
+}
+
+esp_err_t detector_reinitialize(void) {
+    detector_lock();
+    esp_err_t ret=hv_write_and_settle(0);
+    if(ret==ESP_OK)ret=program_fpga();
+    if(ret==ESP_OK)ret=dac_zero_channels();
+    if(ret==ESP_OK)ret=hv_write_and_settle(STARTUP_HV_BYTE);
+    detector_unlock(); return ret;
 }

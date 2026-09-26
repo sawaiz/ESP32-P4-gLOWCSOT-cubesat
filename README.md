@@ -1,8 +1,53 @@
 # ESP32-P4 gLOWCOST CubeSat Muon Readout
 
-This repository contains ESP-IDF firmware for running a gLOWCOST/MPPC cosmic-muon detector readout on a Waveshare ESP32-P4 Module DEV KIT. The firmware adapts the Raspberry Pi HAT readout workflow to the ESP32-P4 40-pin header, including FPGA programming, high-voltage control, DAC threshold setup, one-minute count logging, BME280 environment logging, a small Wi-Fi setup interface, and a BLE live display link for an ESP32-S3-GEEK screen.
+ESP-IDF firmware and a native iPhone companion for a gLOWCOST/MPPC cosmic-muon detector on the Waveshare ESP32-P4 Module DEV KIT.
 
-The active profile is adapted from `tharinduudu/mppcInterface-Oct-2025` for the new layout 3v0 readout.
+## New features
+
+- **Two-minute Wi-Fi setup:** 120 seconds without a connected Wi-Fi client, 100 ms AP beacons, and a **Start Physics Run** button in the web interface and iPhone app.
+- **Explicit physics validity:** setup, HV transitions and settling are excluded from valid physics intervals. CSV rows retain raw counts and append validity, sequence, uptime, interval length, temperature and pressure.
+- **Advertising plus a full Bluetooth connection:** `MuonP4` advertises about every 15 seconds, including while a phone is connected. Compact scan responses carry the three main coincidence counts, temperature, pressure and flags; the connection supplies all seven channels and exact 64-bit cumulative physics totals.
+- **iPhone Live Activity and Dynamic Island:** press **Start Logging** while the app is open, wait for a connection, then monitor from the Lock Screen or Dynamic Island on supported iPhones. Stale updates are marked overdue.
+- **Raw and corrected charts:** editable pressure and temperature coefficients, separate coincidence-pair fits, environmental plots and recent minute records. Gaps remain gaps; cumulative counters recover aggregate counts without inventing missing minute data.
+- **Full detector controls over Bluetooth:** time sync, run labels, Wi-Fi power controls, HV, FPGA, DAC, environmental status, current/recent logs and previous SD-file downloads continue to work after Wi-Fi shuts down.
+- **GPS and phone metadata:** local JSONL logs include location, fix age/accuracy, altitude, phone battery state and correction settings. GPS is never broadcast by the detector.
+
+**Validation:** firmware, iPhone simulator and unsigned iPhone Release builds pass; shared C/Swift protocol tests pass. The screenshots below are native simulator captures with **synthetic data**, not a detector measurement. The new firmware has not yet been flashed or tested with the physical detector. [Verification and hardware checks](docs/verification.md).
+
+## iPhone preview
+
+<table>
+<tr><th>Live counts and cumulative totals</th><th>Raw and corrected charts</th></tr>
+<tr>
+<td><img src="docs/assets/iphone-live-demo.png" width="330" alt="MuonP4 iPhone Live tab displaying explicitly labelled simulated counts and cumulative totals"></td>
+<td><img src="docs/assets/iphone-charts-demo.png" width="330" alt="MuonP4 iPhone Charts tab displaying explicitly labelled simulated raw and pressure-temperature corrected rates"></td>
+</tr>
+</table>
+
+Open [MuonMonitor.xcodeproj](MuonMonitor/MuonMonitor.xcodeproj), choose a development team for both the app and its Live Activity extension, and build for an iPhone with iOS 17 or later. The detector needs matching protocol-v4 firmware. See the [iPhone guide and worked examples](docs/iphone-guide.md) for logging, corrections, Dynamic Island, GPS, controls and downloads.
+
+## Typical run
+
+1. Insert the SD card and power the detector.
+2. Open the iPhone app and press **Start Logging**. Allow Bluetooth/GPS access and wait for the connection.
+3. On **Detector**, sync phone time, set a run label and check FPGA, SD and HV status. The Wi-Fi page remains available at `http://192.168.4.1` during setup.
+4. Press **Start Physics Run**, or allow 120 seconds without a Wi-Fi client. A Bluetooth connection does not keep Wi-Fi on.
+5. HV cycles off, Wi-Fi stops, HV is restored after 3 seconds and settles for 10 seconds. A fresh complete minute is required before a physics-valid record appears.
+6. Lock the phone to use the Live Activity; open **Charts** for raw/corrected rates. The detector's SD card remains the authoritative minute-by-minute record.
+7. Export the phone log or download detector CSV files over Bluetooth. Keep the app foregrounded during controls and large downloads.
+
+## Build and setup
+
+Use ESP-IDF **5.5.4** with the checked-in configuration and dependency lockfile:
+
+```sh
+idf.py build
+./tests/run-host-tests.sh
+```
+
+These commands build/test locally; they do not flash a device. See the [development guide](docs/developer-guide.md) for deployment commands and the hardware profile before installing a new image.
+
+Wi-Fi setup: SSID **MuonReadout**, password **glowcost**, address **http://192.168.4.1**. **Keep Wi-Fi On** suspends automatic shutdown. Once stopped, Wi-Fi stays off until reboot.
 
 ## Current Hardware Profile
 
@@ -15,138 +60,39 @@ The active profile is adapted from `tharinduudu/mppcInterface-Oct-2025` for the 
 - Startup DAC values: channels 0-3 at `0x2f1`; threshold channels 4-7 at `0x070`.
 - Environment sensor: optional BME280 on I2C `0x76` or `0x77`.
 - Storage: onboard microSD card in SPI mode.
-- Optional quick-look display: Waveshare ESP32-S3-GEEK running `display/s3-geek-ble-display`.
+- Legacy S3-GEEK display source is retained in `display/`; its old decoder is not compatible with Bluetooth protocol v4.
 
-## What The Firmware Does
+## Web interface
 
-At boot, the ESP32-P4:
+The web UI provides SD readiness, counts, time, run labels, HV/FPGA/DAC controls and downloads. The image below is the **upstream web UI capture**; its older power-button wording predates Start Physics Run.
 
-1. Turns HV off.
-2. Programs the iCE40 FPGA from `main/fpga.bin`.
-3. Starts the FPGA runtime clock.
-4. Initializes the DACx578 startup values.
-5. Enables HV to `0xea`.
-6. Waits 10 seconds before counting, so startup noise is not logged.
-7. Mounts the SD card and creates a fresh data file.
-8. Starts a Wi-Fi access point and web UI for setup, status, downloads, and controls.
-9. Starts BLE live-count advertisements for the S3 screen display.
-10. Automatically turns Wi-Fi off after the setup window when no client is connected, while SD logging, counting, and BLE live display continue.
-
-## Quick Start
-
-Flash the ESP32-P4:
-
-```sh
-idf.py set-target esp32p4
-idf.py build
-idf.py -p /dev/cu.usbmodem5B5E1289611 flash monitor
-```
-
-Connect to the setup web page:
-
-- SSID: `MuonReadout`
-- Password: `glowcost`
-- URL: `http://192.168.4.1`
-
-Flash the optional ESP32-S3-GEEK BLE display:
-
-```sh
-cd display/s3-geek-ble-display
-idf.py set-target esp32s3
-idf.py build
-idf.py -p /dev/cu.usbmodem11301 flash monitor
-```
-
-## Web Interface
-
-The web page highlights SD-card readiness, live one-minute coincident counts, HV/FPGA/DAC controls, environment readings, current log downloads, and previous SD files.
-
-![ESP32-P4 muon readout web interface](docs/assets/webserver-screenshot.png)
-
-For a field run:
-
-1. Insert the SD card.
-2. Power the detector from USB or a power bank.
-3. Connect to `MuonReadout`.
-4. Open `http://192.168.4.1`.
-5. Check that SD card status says ready.
-6. Let browser time sync automatically.
-7. Add a run label if useful, such as location or flight number.
-8. Check live counts briefly on the web page or the S3 BLE display.
-9. Use power-saving mode or let Wi-Fi auto-off.
-10. Leave the detector running; data continues logging to SD and the S3 display can keep showing live BLE snapshots.
+![Earlier ESP32-P4 web interface](docs/assets/webserver-screenshot.png)
 
 ## Guides
 
-- [Detector Operation Guide](docs/operation-guide.md)
-- [Detector Sections Explained](docs/detector-sections.md)
-- [Build, Flash, And Development Guide](docs/developer-guide.md)
-- [Data Files And SD Logging](docs/data-format.md)
-- [Threshold Tuning Results](docs/threshold-tuning-results.md)
+- [iPhone features, setup and examples](docs/iphone-guide.md)
+- [Bluetooth protocol v4 and command API](docs/bluetooth-protocol.md)
+- [Detector operation](docs/operation-guide.md)
+- [Data formats and SD logging](docs/data-format.md)
+- [Build and development](docs/developer-guide.md)
+- [Validation status and hardware acceptance checks](docs/verification.md)
+- [Detector hardware sections](docs/detector-sections.md)
+- [Threshold tuning results](docs/threshold-tuning-results.md)
 - [Troubleshooting](docs/troubleshooting.md)
 
-## Repository Layout
+## Repository layout
 
-```text
-CMakeLists.txt
-sdkconfig
-sdkconfig.defaults
-dependencies.lock
-main/
-  CMakeLists.txt
-  idf_component.yml
-  app_common.h
-  app_state.c
-  console.c
-  counters.c
-  environment.c
-  hardware.c
-  main.c
-  storage.c
-  web.c
-  fpga.bin
-display/
-  s3-geek-ble-display/
-    CMakeLists.txt
-    sdkconfig.defaults
-    main/
-      CMakeLists.txt
-      main.c
-docs/
-  data-format.md
-  detector-sections.md
-  developer-guide.md
-  kicadSCHEMATIC.pdf
-  operation-guide.md
-  threshold-tuning-results.md
-  troubleshooting.md
-```
+| Path | Purpose |
+|---|---|
+| `main/` | P4 detector firmware, web UI, BLE telemetry and controls |
+| `MuonMonitor/` | Native SwiftUI iPhone app, Live Activity extension and decoder tests |
+| `tests/` | Host tests for physics intervals and C-to-Swift telemetry compatibility |
+| `docs/` | Operating guides, protocol specification and screenshots |
+| `display/s3-geek-ble-display/` | Legacy decoder source; not compatible with protocol v4 |
+| `sdkconfig`, `sdkconfig.defaults`, `dependencies.lock` | Reproducible firmware configuration |
 
-Generated folders such as `build/` and `managed_components/` are intentionally ignored.
+## Operating limits
 
-## Safety Notes
+`physics_valid` certifies the firmware's operating-state checks, not that Bluetooth RF interference has been experimentally ruled out. The separate C6 radio must support hosted BLE and concurrent advertising/connections; that combination still needs a hardware trial. Temperature corrections are provisional fits consistent with zero, not a universal calibration.
 
-This detector controls high voltage. The firmware intentionally turns HV off before FPGA flashing, Wi-Fi shutdown, and startup transitions. Counting is disabled while HV is off or settling.
-
-Do not connect or disconnect scintillator/SiPM hardware while HV is enabled. Power down or turn HV off first.
-
-## Known Good Settings
-
-| Setting | Current value |
-| --- | --- |
-| FPGA bitstream | `top_50MHz_led100_dt200_pi10us.bin` embedded as `main/fpga.bin` |
-| HV byte | `0xea` |
-| HV settle delay | 10 seconds |
-| DACx578 address | `0x47` |
-| SiPM DAC channels 0-3 | `0x2f1` |
-| Threshold DAC channels 4-7 | `0x070` |
-| Count interval | 60 seconds |
-| Environment interval | 5-minute averages |
-| Wi-Fi SSID | `MuonReadout` |
-| Wi-Fi password | `glowcost` |
-| Wi-Fi auto-off | 7 seconds if no client is connected |
-| BLE display name | `MuonP4` |
-
-## Current Status
-
-The latest cleaned firmware removes temporary debug diagnostics used during tuning. It keeps SD logging, BME280 environment logging, temperature compensation, web setup, FPGA flashing, HV protection, power-saving behavior, and the BLE live display path.
+This detector controls high voltage. HV is switched off before FPGA reconfiguration and Wi-Fi shutdown, and counting is gated during settling. Turn HV off or power down before changing scintillator/SiPM connections. Bluetooth control uses encrypted Just Works pairing; it does not implement an owner-only access policy or authenticated MITM protection.

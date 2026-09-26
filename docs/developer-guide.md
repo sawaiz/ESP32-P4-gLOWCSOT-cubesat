@@ -20,7 +20,7 @@ idf.py build
 Flash:
 
 ```sh
-idf.py -p /dev/cu.usbmodem5B5E1289611 flash monitor
+idf.py -p PORT flash monitor
 ```
 
 If the serial port differs:
@@ -44,7 +44,7 @@ The firmware is split into detector sections instead of keeping every subsystem 
 | `main/environment.c` | BME280 forced reads, 5-minute averages, and temperature compensation |
 | `main/web.c` | Embedded web UI, HTTP API, Wi-Fi AP, and power-saving web controls |
 | `main/console.c` | USB serial maintenance commands |
-| `main/ble_broadcast.c` | BLE live-count advertisements for the S3 quick-look display |
+| `main/ble_broadcast.c` | Protocol-v4 advertising, full telemetry and GATT services |
 
 Important constants live in `main/app_common.h`:
 
@@ -113,27 +113,22 @@ The web interface is embedded as a C string in `main/web.c`. The main API endpoi
 | `/api/hv` | set HV or turn it off |
 | `/api/dac` | set one DAC channel |
 | `/api/fpga` | safe FPGA reflash |
-| `/api/power_save` | shut Wi-Fi off |
+| `/api/start_physics` | start the Wi-Fi/HV physics transition |
+| `/api/power_save` | compatibility alias for the same transition |
 | `/api/wifi_keep_on` | disable auto-off |
 
-## BLE Live Display
+## Bluetooth and iPhone development
 
-The P4 firmware broadcasts live detector state through non-connectable BLE advertisements. The ESP32-S3-GEEK display firmware lives in:
+`main/ble_broadcast.c` provides legacy discovery/scan responses plus connected telemetry. `main/ble_control.c` queues controls and chunked SD downloads outside NimBLE callbacks. `main/telemetry_protocol.c` defines the exact 160-byte record; `MuonMonitor/Shared/Telemetry.swift` decodes it.
 
-```text
-display/s3-geek-ble-display
-```
-
-Build and flash it separately:
+The iPhone app is in `MuonMonitor/MuonMonitor.xcodeproj`. Select a signing team for the app and MuonLive extension for a physical iPhone. See [iPhone guide](iphone-guide.md), [protocol](bluetooth-protocol.md), and [verification](verification.md).
 
 ```sh
-cd display/s3-geek-ble-display
-idf.py set-target esp32s3
-idf.py build
-idf.py -p /dev/cu.usbmodem11301 flash monitor
+./tests/run-host-tests.sh
+xcodebuild -project MuonMonitor/MuonMonitor.xcodeproj -scheme MuonMonitor -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
 ```
 
-The display does not connect to Wi-Fi. It passively scans for the P4 manufacturer-data packet and redraws the latest coincidence counts, raw counts, HV state, SD state, FPGA state, time-sync state, and RSSI.
+The old `display/s3-geek-ble-display` source is retained for reference, but its previous payload decoder is incompatible with v4. Port its decoder before attempting to use it with this firmware.
 
 ## Power And Noise Notes
 
@@ -141,10 +136,11 @@ The firmware is optimized for field operation:
 
 - Wi-Fi can be disabled after setup.
 - Wi-Fi auto-off runs when no client is connected.
-- The S3 quick-look display uses BLE advertisements instead of the Wi-Fi web API.
+- The iPhone uses connected BLE; advertisements continue while connected.
+- Bluetooth traffic is not yet experimentally certified noise-free.
 - HV is cycled safely during Wi-Fi shutdown.
 - SD logging continues without Wi-Fi.
-- Serial minute count output is suppressed after power-saving mode starts.
+- Minute CSV records are written to SD; the console `counts` command is a non-destructive live snapshot.
 - PSRAM is disabled in the default build.
 - CPU power management can scale idle CPU down after Wi-Fi is off.
 
@@ -157,10 +153,10 @@ idf.py build
 git status --short
 ```
 
-If hardware is connected:
+Only when a hardware installation is intended and authorized:
 
 ```sh
-idf.py -p /dev/cu.usbmodem5B5E1289611 flash monitor
+idf.py -p PORT flash monitor
 ```
 
 Healthy boot should show SD card info and `startup HV enable result: ESP_OK`.

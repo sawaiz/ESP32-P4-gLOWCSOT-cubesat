@@ -1,5 +1,8 @@
 #include "app_common.h"
 
+static bool s_shutdown_is_auto;
+static int64_t s_wifi_idle_since_ms;
+
 static const char s_index_html[] =
 // One self-contained page keeps the AP useful even with no internet connection
 // and no filesystem dependency beyond the SD data logs.
@@ -23,7 +26,7 @@ static const char s_index_html[] =
 "<section><h2>High Voltage</h2><p>Startup sequence: HV off, FPGA flash, DAC init, then profile HV after settle.</p><div class=\"row\"><input id=\"hvByte\" class=\"mono\" value=\"ea\" maxlength=\"2\" size=\"4\"><button onclick=\"setHv()\">Set HV Byte</button><button class=\"secondary\" onclick=\"hvOff()\">Off</button></div></section>"
 "<section><h2>FPGA / DAC</h2><div class=\"row\"><button onclick=\"flashFpga()\">HV Off + Flash FPGA + HV On</button><button class=\"secondary\" onclick=\"dacZero()\">Set Startup DAC</button></div>"
 "<div class=\"row\"><input id=\"dacCh\" type=\"number\" min=\"0\" max=\"7\" value=\"0\"><input id=\"dacVal\" class=\"mono\" value=\"0000\" maxlength=\"4\" size=\"6\"><button class=\"secondary\" onclick=\"setDac()\">Set DAC</button></div></section></div>"
-"<section><h2>Power</h2><p>For quiet data, sync/download/check briefly, then turn Wi-Fi off. HV cycles off during Wi-Fi shutdown, then counting resumes after settle.</p><div class=\"row\"><button onclick=\"keepWifiOn()\">Keep Wi-Fi On</button><button class=\"secondary\" onclick=\"allowWifiAutoOff()\">Allow Auto-Off</button><button onclick=\"powerSave()\">Turn Wi-Fi Off</button></div></section>"
+"<section><h2>Power</h2><p>Setup data are not physics data. Start Physics Run when ready, or let setup finish after 120 seconds without a connected client. HV cycles off during Wi-Fi shutdown and settles before a fresh minute begins.</p><div class=\"row\"><button onclick=\"keepWifiOn()\">Keep Wi-Fi On</button><button class=\"secondary\" onclick=\"allowWifiAutoOff()\">Allow Auto-Off</button><button onclick=\"powerSave()\">Start Physics Run</button></div></section>"
 "<section class=\"hero\"><h2>Live Minute Coincident Counts</h2><div id=\"countCards\" class=\"countCards\"></div></section>"
 "<section><h2>Counts Detail</h2><table id=\"counts\"></table></section>"
 "<section><h2>Minute Log</h2><div class=\"row\"><a href=\"/api/log.csv\">Download CSV</a></div><table id=\"log\"></table></section>"
@@ -53,7 +56,7 @@ static const char s_index_html[] =
 "async function setDac(){await api('/api/dac?ch='+document.getElementById('dacCh').value+'&value='+document.getElementById('dacVal').value); refresh()}"
 "async function keepWifiOn(){await api('/api/wifi_keep_on?enable=1'); refresh()}"
 "async function allowWifiAutoOff(){await api('/api/wifi_keep_on?enable=0'); refresh()}"
-"async function powerSave(){if(confirm('Turn Wi-Fi off until next reboot? HV will cycle off briefly and counting resumes after settle.')){try{await syncTime()}catch(e){} await api('/api/power_save'); document.body.innerHTML='<main><section><h2>Power saving mode enabled</h2><p>Wi-Fi is shutting down. HV will restart after 3 seconds, then counting resumes after settle.</p></section></main>'}}"
+"async function powerSave(){if(confirm('Start physics recording? Wi-Fi will stop until reboot. HV will cycle and settle; the first physics record requires a full stable minute.')){try{await syncTime()}catch(e){} await api('/api/start_physics'); document.body.innerHTML='<main><section><h2>Starting physics run</h2><p>Wi-Fi is shutting down. HV will restart after 3 seconds and settle for 10 seconds. The first physics record follows a full stable minute. MuonP4 broadcasts the latest minute every 15 seconds.</p></section></main>'}}"
 "autoSyncTime(); loadSdFiles(); setInterval(refresh,2000);</script></body></html>";
 
 
@@ -98,7 +101,10 @@ static void json_record_append(char *buf, size_t buf_len, size_t *offset, const 
         }
     }
     if (*offset < buf_len) {
-        written = snprintf(buf + *offset, buf_len - *offset, "]}");
+        written = snprintf(buf + *offset, buf_len - *offset,
+            "],\"sequence\":%" PRIu32 ",\"interval_ms\":%" PRIu32 ",\"physics_valid\":%s,\"env_valid\":%s}",
+            record->sequence, record->interval_ms,
+            record->physics_valid ? "true" : "false", record->env_valid ? "true" : "false");
         if (written > 0) {
             *offset += (size_t)written;
         }
@@ -107,22 +113,6 @@ static void json_record_append(char *buf, size_t buf_len, size_t *offset, const 
 
 // Format one detector record as the Pi-style CSV row used by downloads and
 // quick display clients.
-static void csv_record_line(const count_record_t *record, char *line, size_t line_len)
-{
-    char iso[32];
-    csv_time_string(record->epoch, iso, sizeof(iso));
-    size_t off = snprintf(line, line_len, "%lld,%s", (long long)record->epoch, iso);
-    for (size_t i = 0; i < COUNT_CHANNELS && off < line_len; i++) {
-        int written = snprintf(line + off, line_len - off, ",%" PRIu32, record->counts[i]);
-        if (written > 0) {
-            off += (size_t)written;
-        }
-    }
-    if (off + 1 < line_len) {
-        snprintf(line + off, line_len - off, "\n");
-    }
-}
-
 // Return the live detector status used by the dashboard: counts, HV, SD, time,
 // FPGA, and environment state.
 static esp_err_t status_handler(httpd_req_t *req)
@@ -138,6 +128,8 @@ static esp_err_t status_handler(httpd_req_t *req)
     bool counting_enabled;
     bool power_save_mode;
     bool wifi_keep_on;
+    bool physics_ready;
+    bool shutdown_pending;
     int64_t settle_remaining_ms;
     bool sd_mounted = false;
     char log_path[sizeof(s_log_path)] = "";
@@ -159,6 +151,8 @@ static esp_err_t status_handler(httpd_req_t *req)
     counting_enabled = s_counting_enabled;
     power_save_mode = s_power_save_mode;
     wifi_keep_on = s_wifi_keep_on;
+    physics_ready = physics_ready_locked();
+    shutdown_pending = s_shutdown_pending;
     bme280_ok = s_bme280_ok;
     env_latest = s_bme280_latest;
     settle_remaining_ms = s_hv_settle_until_ms ? s_hv_settle_until_ms - (esp_timer_get_time() / 1000) : 0;
@@ -211,7 +205,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         }
         json_record_append(buf, sizeof(buf), &off, &records[i]);
     }
-    off += snprintf(buf + off, sizeof(buf) - off, "]}");
+    off += snprintf(buf + off, sizeof(buf) - off,
+        "],\"physics_ready\":%s,\"shutdown_pending\":%s}",
+        physics_ready ? "true" : "false", shutdown_pending ? "true" : "false");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -221,13 +217,14 @@ static esp_err_t status_handler(httpd_req_t *req)
 // Download the in-RAM recent minute log as CSV.
 static esp_err_t log_csv_handler(httpd_req_t *req)
 {
+    count_record_t *records=calloc(LOG_RECORDS,sizeof(*records));
+    if(!records)return httpd_resp_send_err(req,HTTPD_500_INTERNAL_SERVER_ERROR,"out of memory");
     httpd_resp_set_type(req, "text/csv");
     httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=muon_log.csv");
-    char header[192];
+    char header[384];
     count_csv_header(header, sizeof(header));
     httpd_resp_sendstr_chunk(req, header);
 
-    count_record_t records[LOG_RECORDS];
     size_t count;
     portENTER_CRITICAL(&s_state_mux);
     count = s_log_count;
@@ -237,11 +234,12 @@ static esp_err_t log_csv_handler(httpd_req_t *req)
     }
     portEXIT_CRITICAL(&s_state_mux);
 
-    char line[192];
+    char line[384];
     for (size_t i = 0; i < count; i++) {
-        csv_record_line(&records[i], line, sizeof(line));
+        count_csv_record(&records[i], line, sizeof(line));
         httpd_resp_sendstr_chunk(req, line);
     }
+    free(records);
     return httpd_resp_sendstr_chunk(req, NULL);
 }
 
@@ -265,8 +263,8 @@ static esp_err_t latest_txt_handler(httpd_req_t *req)
         return httpd_resp_sendstr(req, "waiting for first minute record\n");
     }
 
-    char line[192];
-    csv_record_line(&record, line, sizeof(line));
+    char line[384];
+    count_csv_record(&record, line, sizeof(line));
     return httpd_resp_sendstr(req, line);
 }
 
@@ -636,32 +634,9 @@ static esp_err_t dac_handler(httpd_req_t *req)
 // HV back on, then normal settle.
 static esp_err_t fpga_handler(httpd_req_t *req)
 {
-    // Reflashing while biased made the front-end LEDs and counts misbehave on
-    // the bench, so enforce the safe sequence here instead of trusting the UI.
-    ESP_LOGW(TAG, "FPGA reflash requested: turning HV off before programming");
-    esp_err_t ret = hv_write_and_settle(0x00);
-    if (ret != ESP_OK) {
-        httpd_resp_set_status(req, "500 HV off failed");
-        return text_response(req, esp_err_to_name(ret));
-    }
-
-    clear_live_counts();
-    ret = program_fpga();
-    if (ret != ESP_OK) {
-        httpd_resp_set_status(req, "500 FPGA program failed");
-        return text_response(req, esp_err_to_name(ret));
-    }
-    ret = dac_zero_channels();
-    if (ret != ESP_OK) {
-        httpd_resp_set_status(req, "500 DAC startup failed");
-        return text_response(req, esp_err_to_name(ret));
-    }
-    ret = hv_write_and_settle(STARTUP_HV_BYTE);
-    if (ret != ESP_OK) {
-        httpd_resp_set_status(req, "500 HV restart failed");
-        return text_response(req, esp_err_to_name(ret));
-    }
-    return text_response(req, "ok: FPGA flashed, DAC startup values loaded, HV restarted");
+    esp_err_t ret=detector_reinitialize();
+    if(ret!=ESP_OK)return httpd_resp_send_err(req,HTTPD_500_INTERNAL_SERVER_ERROR,esp_err_to_name(ret));
+    return text_response(req,"ok: FPGA programmed, DAC startup values loaded, HV settled");
 }
 
 // Lower the idle CPU floor where ESP-IDF power management is available.
@@ -690,7 +665,20 @@ static void power_save_task(void *arg)
 {
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(1500));
+    portENTER_CRITICAL(&s_state_mux);
+    if (s_shutdown_is_auto && (s_wifi_keep_on || s_wifi_clients > 0)) {
+        s_shutdown_pending = false;
+        s_wifi_idle_since_ms = esp_timer_get_time() / 1000;
+        portEXIT_CRITICAL(&s_state_mux);
+        ESP_LOGW(TAG, "auto shutdown cancelled: operator returned during grace period");
+        vTaskDelete(NULL);
+        return;
+    }
+    s_power_save_mode = true;
+    s_measurement_generation++;
+    portEXIT_CRITICAL(&s_state_mux);
 
+    detector_lock();
     // Capture the current HV byte before the web server disappears. After this
     // request returns, the operator may not be able to reach the device again.
     uint8_t restore_hv;
@@ -715,10 +703,16 @@ static void power_save_task(void *arg)
     }
 
     ret = esp_wifi_stop();
+    bool radio_ok = ret == ESP_OK;
     if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_INIT) {
         ESP_LOGW(TAG, "Wi-Fi stop failed: %s", esp_err_to_name(ret));
     }
     ret = esp_wifi_deinit();
+    radio_ok = radio_ok && ret == ESP_OK;
+    portENTER_CRITICAL(&s_state_mux);
+    s_wifi_stopped = radio_ok;
+    s_measurement_generation++;
+    portEXIT_CRITICAL(&s_state_mux);
     if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_INIT) {
         ESP_LOGW(TAG, "Wi-Fi deinit failed: %s", esp_err_to_name(ret));
     }
@@ -737,39 +731,59 @@ static void power_save_task(void *arg)
         ESP_LOGW(TAG, "HV was already off before Wi-Fi shutdown; leaving it off");
     }
 
+    portENTER_CRITICAL(&s_state_mux);
+    s_shutdown_pending = false;
+    s_measurement_generation++;
+    bool ready = physics_ready_locked();
+    portEXIT_CRITICAL(&s_state_mux);
+    ESP_LOGW(TAG, "run transition: wifi_off=%d hv_settled=%d physics_ready=%d; full minute required",
+             radio_ok, counting_is_enabled(), ready);
+    detector_unlock();
     set_runtime_power_profile();
     esp_log_level_set("*", ESP_LOG_WARN);
     ESP_LOGW(TAG, "power saving mode active; Wi-Fi is off and detector logging continues");
     vTaskDelete(NULL);
 }
 
-// Mark power-saving mode active and launch the shutdown task once.
-static esp_err_t enter_power_save_mode(void)
+// Queue one transition. A manual request can upgrade a pending automatic one.
+static esp_err_t enter_power_save_mode(bool automatic)
 {
     portENTER_CRITICAL(&s_state_mux);
-    bool already_enabled = s_power_save_mode;
-    s_power_save_mode = true;
-    portEXIT_CRITICAL(&s_state_mux);
-
-    if (already_enabled) {
+    if (s_power_save_mode || s_shutdown_pending) {
+        if (!automatic) {
+            s_shutdown_is_auto = false;
+        }
+        portEXIT_CRITICAL(&s_state_mux);
         return ESP_OK;
     }
-
+    s_shutdown_pending = true;
+    s_shutdown_is_auto = automatic;
+    portEXIT_CRITICAL(&s_state_mux);
     BaseType_t ok = xTaskCreatePinnedToCore(power_save_task, "power_save_task", 4096, NULL, 5, NULL, 1);
-    return ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
-}
-
-// Respond to the browser before Wi-Fi disappears, then start power-saving mode.
-static esp_err_t power_save_handler(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "text/plain");
-    ESP_RETURN_ON_ERROR(httpd_resp_sendstr(req, "ok: Wi-Fi shutting down until next reboot"), TAG, "send power-save response");
-
-    esp_err_t ret = enter_power_save_mode();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "could not enter power saving mode: %s", esp_err_to_name(ret));
+    if (ok != pdPASS) {
+        portENTER_CRITICAL(&s_state_mux);
+        s_shutdown_pending = false;
+        portEXIT_CRITICAL(&s_state_mux);
+        return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+
+esp_err_t request_physics_run(void) { return enter_power_save_mode(false); }
+esp_err_t set_wifi_keep_on(bool enabled) {
+    portENTER_CRITICAL(&s_state_mux);
+    if (s_wifi_stopped || s_power_save_mode) { portEXIT_CRITICAL(&s_state_mux); return ESP_ERR_INVALID_STATE; }
+    s_wifi_keep_on=enabled; s_wifi_idle_since_ms=esp_timer_get_time()/1000;
+    portEXIT_CRITICAL(&s_state_mux); return ESP_OK;
+}
+
+static esp_err_t power_save_handler(httpd_req_t *req)
+{
+    esp_err_t ret = enter_power_save_mode(false);
+    if (ret != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Could not start physics run; try again");
+    }
+    return text_response(req, "ok: starting physics run; Wi-Fi will stop, HV will settle, then a full minute will be recorded");
 }
 
 // Toggle whether Wi-Fi should stay up for this boot.
@@ -781,44 +795,40 @@ static esp_err_t wifi_keep_on_handler(httpd_req_t *req)
 
     portENTER_CRITICAL(&s_state_mux);
     s_wifi_keep_on = keep_on;
+    s_wifi_idle_since_ms = esp_timer_get_time() / 1000;
     portEXIT_CRITICAL(&s_state_mux);
 
     ESP_LOGW(TAG, "Wi-Fi auto-off %s", keep_on ? "disabled" : "enabled");
     return text_response(req, keep_on ? "ok: Wi-Fi will stay on" : "ok: Wi-Fi auto-off enabled");
 }
 
-// Give the operator a short setup window, then disable Wi-Fi automatically if no
-// one connected and "keep on" was not selected.
+// A connected operator or Keep Wi-Fi On suspends the idle countdown. After
+// disconnection, allow a fresh 120 seconds to reconnect before starting physics.
 void auto_power_save_task(void *arg)
 {
     (void)arg;
-    vTaskDelay(pdMS_TO_TICKS(WIFI_AUTO_OFF_MS));
-
     while (true) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        int64_t now_ms = esp_timer_get_time() / 1000;
         portENTER_CRITICAL(&s_state_mux);
         bool active = s_power_save_mode;
-        bool keep_on = s_wifi_keep_on;
-        uint8_t clients = s_wifi_clients;
+        bool pending = s_shutdown_pending;
+        bool busy = s_wifi_keep_on || s_wifi_clients > 0;
+        if (busy) {
+            s_wifi_idle_since_ms = now_ms;
+        }
+        bool expired = now_ms - s_wifi_idle_since_ms >= WIFI_AUTO_OFF_MS;
         portEXIT_CRITICAL(&s_state_mux);
-
         if (active) {
             break;
         }
-        if (keep_on) {
-            vTaskDelay(pdMS_TO_TICKS(30000));
-            continue;
-        }
-        if (clients == 0) {
-            // Field default: give the operator a short setup window, then shut
-            // radio noise down if nobody connected.
-            ESP_LOGW(TAG, "no Wi-Fi client after setup window; entering power saving mode");
-            esp_err_t ret = enter_power_save_mode();
+        if (!pending && !busy && expired) {
+            ESP_LOGW(TAG, "no Wi-Fi client for 120 seconds; starting physics run");
+            esp_err_t ret = enter_power_save_mode(true);
             if (ret != ESP_OK) {
-                ESP_LOGW(TAG, "auto power saving failed: %s", esp_err_to_name(ret));
+                ESP_LOGW(TAG, "auto physics start failed: %s", esp_err_to_name(ret));
             }
-            break;
         }
-        vTaskDelay(pdMS_TO_TICKS(30000));
     }
     vTaskDelete(NULL);
 }
@@ -829,8 +839,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     (void)arg;
     (void)event_base;
     (void)event_data;
-    if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+    if (event_id == WIFI_EVENT_AP_START || event_id == WIFI_EVENT_AP_STOP) {
         portENTER_CRITICAL(&s_state_mux);
+        s_measurement_generation++;
+        if (event_id == WIFI_EVENT_AP_START) {
+            s_wifi_stopped = false;
+        }
+        portEXIT_CRITICAL(&s_state_mux);
+    } else if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+        portENTER_CRITICAL(&s_state_mux);
+        s_wifi_idle_since_ms = esp_timer_get_time() / 1000;
         if (s_wifi_clients < UINT8_MAX) {
             s_wifi_clients++;
         }
@@ -838,6 +856,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         ESP_LOGI(TAG, "Wi-Fi client connected");
     } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         portENTER_CRITICAL(&s_state_mux);
+        s_wifi_idle_since_ms = esp_timer_get_time() / 1000;
         if (s_wifi_clients > 0) {
             s_wifi_clients--;
         }
@@ -870,7 +889,7 @@ esp_err_t start_wifi_ap(void)
     wifi_config.ap.ssid_len = strlen(WIFI_AP_SSID);
     wifi_config.ap.channel = WIFI_AP_CHANNEL;
     wifi_config.ap.max_connection = 1;
-    wifi_config.ap.beacon_interval = 1000;
+    wifi_config.ap.beacon_interval = WIFI_BEACON_INTERVAL_MS;
     wifi_config.ap.authmode = strlen(WIFI_AP_PASS) ? WIFI_AUTH_WPA_WPA2_PSK : WIFI_AUTH_OPEN;
 
     ESP_LOGI(TAG, "Wi-Fi init: AP mode");
@@ -881,6 +900,9 @@ esp_err_t start_wifi_ap(void)
     ESP_RETURN_ON_ERROR(esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20), TAG, "wifi AP bandwidth");
     ESP_LOGI(TAG, "Wi-Fi init: start AP");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
+    portENTER_CRITICAL(&s_state_mux);
+    s_wifi_idle_since_ms = esp_timer_get_time() / 1000;
+    portEXIT_CRITICAL(&s_state_mux);
     ESP_LOGI(TAG, "Wi-Fi AP started: SSID=%s password=%s URL=http://192.168.4.1", WIFI_AP_SSID, WIFI_AP_PASS);
     return ESP_OK;
 }
@@ -894,7 +916,7 @@ esp_err_t start_webserver(void)
     config.core_id = 1;
     config.task_priority = tskIDLE_PRIORITY + 3;
     config.stack_size = 8192;
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 20;
     config.lru_purge_enable = true;
 
     ESP_RETURN_ON_ERROR(httpd_start(&s_httpd, &config), TAG, "start HTTP server");
@@ -912,6 +934,7 @@ esp_err_t start_webserver(void)
         {.uri = "/api/hv", .method = HTTP_GET, .handler = hv_handler},
         {.uri = "/api/dac", .method = HTTP_GET, .handler = dac_handler},
         {.uri = "/api/fpga", .method = HTTP_GET, .handler = fpga_handler},
+        {.uri = "/api/start_physics", .method = HTTP_GET, .handler = power_save_handler},
         {.uri = "/api/power_save", .method = HTTP_GET, .handler = power_save_handler},
         {.uri = "/api/wifi_keep_on", .method = HTTP_GET, .handler = wifi_keep_on_handler},
     };

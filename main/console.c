@@ -75,9 +75,9 @@ void console_task(void *arg)
         } else if (strcmp(cmd, "i2c scan") == 0) {
             print_i2c_scan();
         } else if (strcmp(cmd, "counts") == 0) {
-            print_and_reset_counts();
+            print_live_counts();
         } else if (strcmp(cmd, "fpga") == 0) {
-            printf("fpga,%s\n", esp_err_to_name(program_fpga()));
+            printf("fpga,%s\n", esp_err_to_name(detector_reinitialize()));
         } else if (strcmp(cmd, "dac zero") == 0) {
             printf("dac_zero,%s\n", esp_err_to_name(dac_zero_channels()));
         } else if (strncmp(cmd, "dac ", 4) == 0) {

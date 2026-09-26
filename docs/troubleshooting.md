@@ -9,7 +9,7 @@ SSID: MuonReadout
 Password: glowcost
 ```
 
-The AP is intended for setup and may auto-off when no client connects. Reset or power-cycle the ESP32-P4 to restart the setup window.
+The AP automatically stops after 120 continuous seconds without a Wi-Fi client. A Bluetooth connection does not hold it open. Reset or power-cycle the ESP32-P4 to restart the setup window.
 
 If you want more time on the web UI, connect quickly and press **Keep Wi-Fi On**.
 
@@ -87,6 +87,24 @@ Check:
 
 ## No Serial Minute Rows After Power Save
 
-This is expected. To save power and reduce unnecessary activity, serial minute count printing is suppressed after power-saving mode starts. Data continues logging to SD.
+Minute CSV records are written to SD rather than continuously streamed on the console. The `counts` command prints a non-destructive live snapshot; it does not reset the integration window.
 
 Use the web UI before Wi-Fi turns off, or read the CSV file from the SD card after the run.
+
+## iPhone cannot connect or updates stop
+
+- Check that the detector is running protocol-v4 firmware; an older image may have no BLE service or an incompatible payload.
+- Advertising is sparse: keep the app open near the detector until connected. The primary service UUID is `73B47A10-6F6E-4D75-9A50-4D756F6E5034`.
+- One phone connection is supported. Stop logging on another connected phone first.
+- Full controls require encrypted pairing; accept the iPhone pairing prompt when using them.
+- After force-quitting, reopen and start logging again. A Live Activity does not remove all iOS background restrictions.
+- Overdue readings are stale, not zero counts. Reconnection can recover cumulative totals within the same boot, but not missed minute-by-minute environmental data.
+- The C6 firmware must support hosted BLE as well as Wi-Fi. A successful P4 build alone cannot verify the installed C6 image.
+
+## Corrected chart is missing or almost matches raw counts
+
+Only valid physics records with valid environment data are corrected. CH012 and auxiliary channels have no supplied temperature coefficients and show raw data. Corrections near the reference conditions are small, so traces can overlap. Settings use percent per unit; calculations use fractional coefficients. Temperature fits remain provisional.
+
+## GPS or Dynamic Island is unavailable
+
+Allow location and Bluetooth access, start logging in the foreground, and wait for the connection before locking the phone. GPS age/accuracy is recorded even when a fix is stale or approximate. Check Live Activity permissions and use **Restart Live Activity** from the app if it has ended. Dynamic Island requires compatible hardware; other supported iPhones use the Lock Screen Live Activity.

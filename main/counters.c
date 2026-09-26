@@ -1,4 +1,5 @@
 #include "app_common.h"
+#include "measurement_window.h"
 
 // GPIO interrupt hook for the FPGA counter outputs. It only increments a RAM
 // counter so pulse handling stays fast and deterministic.
@@ -59,68 +60,98 @@ void snapshot_counts(uint32_t out[COUNT_CHANNELS], bool reset)
     portEXIT_CRITICAL(&s_count_mux);
 }
 
-// Store a completed minute into the RAM ring buffer, update totals, and hand the
-// same record to the SD logger.
-static void append_log_record(const uint32_t counts[COUNT_CHANNELS])
+// Caller holds s_state_mux. This describes the operating state, not a
+// calibration guarantee; completed records additionally require a full minute.
+bool physics_ready_locked(void)
 {
-    count_record_t record = {
-        .uptime_ms = esp_timer_get_time() / 1000,
-        .epoch = time(NULL),
-    };
-    memcpy(record.counts, counts, sizeof(record.counts));
+    return s_power_save_mode && !s_shutdown_pending && s_wifi_stopped &&
+           s_fpga_ok && s_hv_byte != 0 && s_counting_enabled &&
+           s_hv_settle_until_ms == 0;
+}
 
-    // RAM keeps only the recent tail for the web UI. The SD card remains the
-    // long-term record, so losing old RAM entries is expected.
+static bool append_log_record(count_record_t *record, const measurement_window_t *window)
+{
     portENTER_CRITICAL(&s_state_mux);
-    memcpy(s_last_counts, counts, sizeof(s_last_counts));
-    for (size_t i = 0; i < COUNT_CHANNELS; i++) {
-        s_totals[i] += counts[i];
+    if (!s_counting_enabled || s_measurement_generation != window->generation ||
+        physics_ready_locked() != window->physics) {
+        portEXIT_CRITICAL(&s_state_mux);
+        return false;
     }
-    s_log[s_log_head] = record;
+    record->physics_valid = measurement_physics_valid(window, record->uptime_ms,
+        s_measurement_generation, physics_ready_locked());
+    record->sequence = s_latest_minute.sequence + 1;
+    record->time_set = s_time_set;
+    record->wifi_off = s_wifi_stopped;
+    record->hv_settled = s_counting_enabled && s_hv_byte != 0 && s_hv_settle_until_ms == 0;
+    record->env_valid = s_bme280_latest.valid &&
+        record->uptime_ms - s_bme280_sample_uptime_ms <= 3 * BME280_SAMPLE_MS &&
+        isfinite(s_bme280_latest.temp_c) && isfinite(s_bme280_latest.pressure_hpa) &&
+        s_bme280_latest.temp_c > -327.68 && s_bme280_latest.temp_c <= 327.67 &&
+        s_bme280_latest.pressure_hpa > 0 && s_bme280_latest.pressure_hpa < 167772.15;
+    record->temp_c = record->env_valid ? s_bme280_latest.temp_c : 0;
+    record->pressure_hpa = record->env_valid ? s_bme280_latest.pressure_hpa : 0;
+    memcpy(s_last_counts, record->counts, sizeof(s_last_counts));
+    for (size_t i = 0; i < COUNT_CHANNELS; i++) {
+        s_totals[i] += record->counts[i];
+        if (record->physics_valid) s_physics_totals[i] += record->counts[i];
+    }
+    if (record->physics_valid) s_physics_exposure_ms += record->interval_ms;
+    s_latest_minute = *record;
+    s_latest_minute_valid = true;
+    s_log[s_log_head] = *record;
     s_log_head = (s_log_head + 1) % LOG_RECORDS;
     if (s_log_count < LOG_RECORDS) {
         s_log_count++;
     }
     portEXIT_CRITICAL(&s_state_mux);
-    sd_append_record(&record);
+    sd_append_record(record);
+    return true;
 }
 
-// End the current minute window, write the result, and print it over USB unless
-// the detector has entered quiet/power-saving mode.
-void print_and_reset_counts(void)
+// Console inspection must not reset the minute integration or publish a
+// partial record as a full minute.
+void print_live_counts(void)
 {
-    if (!counting_is_enabled()) {
-        clear_live_counts();
-        return;
-    }
-
     uint32_t snapshot[COUNT_CHANNELS];
-    snapshot_counts(snapshot, true);
-    append_log_record(snapshot);
-
-    if (!s_power_save_mode) {
-        printf("counts,epoch=%lld,uptime_ms=%" PRId64, (long long)time(NULL), esp_timer_get_time() / 1000);
-        for (size_t i = 0; i < COUNT_CHANNELS; i++) {
-            printf(",%s=%" PRIu32, s_count_names[i], snapshot[i]);
-        }
-        printf("\n");
-        fflush(stdout);
+    snapshot_counts(snapshot, false);
+    printf("live_counts,uptime_ms=%" PRId64, esp_timer_get_time() / 1000);
+    for (size_t i = 0; i < COUNT_CHANNELS; i++) {
+        printf(",%s=%" PRIu32, s_count_names[i], snapshot[i]);
     }
+    printf("\n");
+    fflush(stdout);
 }
 
-// Background integration loop. It waits for HV to be stable, then records one
-// detector row every COUNTER_PERIOD_MS.
 void counter_task(void *arg)
 {
     (void)arg;
+    measurement_window_t window = {0};
     while (true) {
-        // Do not start the one-minute integration window until HV has settled.
-        // Otherwise the first row after startup would include bias ramp noise.
-        while (!counting_is_enabled()) {
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        portENTER_CRITICAL(&s_state_mux);
+        uint32_t generation = s_measurement_generation;
+        bool enabled = s_counting_enabled;
+        bool ready = physics_ready_locked();
+        portEXIT_CRITICAL(&s_state_mux);
+        window_action_t action = measurement_window_step(&window, now_ms, generation, enabled, ready);
+        if (action == WINDOW_RESET) {
             clear_live_counts();
-            vTaskDelay(pdMS_TO_TICKS(1000));
+        } else if (action == WINDOW_COMPLETE) {
+            count_record_t record = {
+                .uptime_ms = now_ms,
+                .epoch = time(NULL),
+                .interval_ms = (uint32_t)(now_ms - window.start_ms),
+            };
+            snapshot_counts(record.counts, true);
+            if (append_log_record(&record, &window)) {
+                window.start_ms = now_ms;
+                if (!record.physics_valid) {
+                    ESP_LOGW(TAG, "minute %" PRIu32 " is setup/non-physics data", record.sequence);
+                }
+            } else {
+                window.active = false;
+            }
         }
-        vTaskDelay(pdMS_TO_TICKS(COUNTER_PERIOD_MS));
-        print_and_reset_counts();
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

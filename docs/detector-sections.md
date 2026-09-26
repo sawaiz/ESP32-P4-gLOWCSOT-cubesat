@@ -11,8 +11,8 @@ flowchart LR
     F --> C["ESP32-P4 interrupt counters"]
     C --> SD["microSD CSV logs"]
     C --> W["Wi-Fi web UI"]
-    C --> BLE["BLE live display"]
-    BLE --> DISP["ESP32-S3-GEEK screen"]
+    C --> BLE["BLE advertising + connection"]
+    BLE --> DISP["iPhone monitor / scanner"]
     BME["BME280"] --> C
     C --> DAC["DACx578"]
     C --> HV["MAX1932 HV supply"]
@@ -141,19 +141,11 @@ The web server can:
 - set DAC channels
 - enter power-saving mode
 
-## 9. BLE Live Display Section
+## 9. Bluetooth and iPhone section
 
-The P4 sends a compact non-connectable BLE advertisement containing the latest live counter snapshot. The S3 display scans passively and never opens a connection to the detector.
+The P4 hosts the protocol-v4 Bluetooth service through the external C6 radio. The primary advertisement carries MuonP4 and its service UUID; the scan response carries three latest-minute counts plus environment and flags. Advertising windows repeat about every 15 seconds, including during a phone connection.
 
-This gives a quick `tail -f` style view without keeping the Wi-Fi access point active.
-
-| BLE field | Purpose |
-| --- | --- |
-| sequence | shows the packet is updating |
-| epoch | P4 time for the current snapshot |
-| seven counters | coincidence and raw live counts |
-| status byte | time, counting, FPGA, SD, and BME flags |
-| HV byte | current MAX1932 setting |
+Connected telemetry adds all seven counts, exact cumulative physics totals, valid exposure, boot/device identity, HV, FPGA and SD status. The iPhone uses it for charts, logging and Live Activities. Separate encrypted characteristics provide detector controls and file downloads. See the [protocol](bluetooth-protocol.md). Legacy S3 display source is retained but does not decode v4.
 
 ## 10. Power-Saving Section
 
@@ -198,4 +190,4 @@ The ESP32-P4 firmware implements these roles inside `main/main.c`:
 | `dac.py` | `dacx578_write_channel()` and `dac_set_channel()` |
 | `biasAdj.py` | `temp_compensate_dac()` |
 | `slowControl/main.cpp` | GPIO ISRs and `counter_task()` |
-| tailing logs | web UI, BLE S3 display, `/api/latest.txt`, SD downloads |
+| tailing logs | web UI, iPhone Bluetooth app, `/api/latest.txt`, SD downloads |

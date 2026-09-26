@@ -9,3 +9,9 @@ display/*/sdkconfig
 *.map
 *.log
 *.tmp
+
+# Xcode local build and signing state
+DerivedData/
+**/xcuserdata/
+*.xcuserstate
+*.ipa

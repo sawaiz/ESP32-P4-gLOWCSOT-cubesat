@@ -302,6 +302,7 @@ void bme280_task(void *arg)
         if (ret == ESP_OK && reading.valid) {
             portENTER_CRITICAL(&s_state_mux);
             s_bme280_latest = reading;
+            s_bme280_sample_uptime_ms = esp_timer_get_time() / 1000;
             portEXIT_CRITICAL(&s_state_mux);
             temp_sum += reading.temp_c;
             temp_sq_sum += reading.temp_c * reading.temp_c;
@@ -309,6 +310,9 @@ void bme280_task(void *arg)
             humidity_sum += reading.humidity_pct;
             samples++;
         } else {
+            portENTER_CRITICAL(&s_state_mux);
+            s_bme280_latest.valid = false;
+            portEXIT_CRITICAL(&s_state_mux);
             ESP_LOGW(TAG, "BME280 read failed: %s", esp_err_to_name(ret));
         }
 

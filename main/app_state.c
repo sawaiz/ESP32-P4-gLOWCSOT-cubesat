@@ -32,6 +32,12 @@ bool s_time_set;
 bool s_sd_mounted;
 bool s_power_save_mode;
 bool s_wifi_keep_on;
+bool s_shutdown_pending;
+bool s_wifi_stopped;
+uint32_t s_measurement_generation;
+count_record_t s_latest_minute;
+bool s_latest_minute_valid;
+int64_t s_bme280_sample_uptime_ms;
 bool s_fpga_clock_on;
 bool s_fpga_clock_is_clkout;
 esp_clock_output_mapping_handle_t s_fpga_clkout;
@@ -76,3 +82,8 @@ const char *s_count_names[COUNT_CHANNELS] = {
     "gpio5_p29",
     "gpio16_p36",
 };
+
+uint64_t s_physics_totals[COUNT_CHANNELS];
+uint64_t s_physics_exposure_ms;
+
+bool s_sd_write_ok;

@@ -132,24 +132,34 @@
 #define WIFI_AP_PASS            "glowcost"
 #define WIFI_AP_CHANNEL         6
 #define WIFI_AP_MAX_CONN        4
-#define WIFI_AUTO_OFF_MS        (7 * 1000)
+#define WIFI_AUTO_OFF_MS        (120 * 1000)
+#define WIFI_BEACON_INTERVAL_MS 100
 #define FIELD_MIN_CPU_FREQ_MHZ  40
-#define BLE_ADV_INTERVAL_MS     1000
-#define BLE_PAYLOAD_UPDATE_MS   3000
+#define BLE_BROADCAST_PERIOD_MS 15000
+#define BLE_BURST_INTERVAL_MS   100
+#define BLE_BURST_DURATION_MS   350
 #define BLE_COMPANY_ID          0xFFFF
-#define BLE_PAYLOAD_VERSION     1
+#define BLE_PAYLOAD_VERSION     4
 #define BLE_DEVICE_NAME         "MuonP4"
 
 extern const uint8_t fpga_bin_start[] asm("_binary_fpga_bin_start");
 extern const uint8_t fpga_bin_end[] asm("_binary_fpga_bin_end");
 
 // A minute record is kept in RAM for the live web page and also written to SD.
-// Uptime is not written to the SD CSV, but keeping it here is useful while the
-// detector waits for browser time sync.
+// CSV includes uptime and validity so setup cannot masquerade as physics.
 typedef struct {
     int64_t uptime_ms;
     time_t epoch;
     uint32_t counts[COUNT_CHANNELS];
+    uint32_t sequence;
+    uint32_t interval_ms;
+    bool physics_valid;
+    bool wifi_off;
+    bool hv_settled;
+    bool time_set;
+    bool env_valid;
+    double temp_c;
+    double pressure_hpa;
 } count_record_t;
 
 typedef struct {
@@ -202,6 +212,8 @@ extern volatile uint32_t s_counts[COUNT_CHANNELS];
 extern uint32_t s_last_counts[COUNT_CHANNELS];
 extern uint32_t s_live_counts[COUNT_CHANNELS];
 extern uint64_t s_totals[COUNT_CHANNELS];
+extern uint64_t s_physics_totals[COUNT_CHANNELS];
+extern uint64_t s_physics_exposure_ms;
 extern count_record_t s_log[LOG_RECORDS];
 extern size_t s_log_head;
 extern size_t s_log_count;
@@ -211,8 +223,15 @@ extern int64_t s_hv_settle_until_ms;
 extern bool s_fpga_ok;
 extern bool s_time_set;
 extern bool s_sd_mounted;
+extern bool s_sd_write_ok;
 extern bool s_power_save_mode;
 extern bool s_wifi_keep_on;
+extern bool s_shutdown_pending;
+extern bool s_wifi_stopped;
+extern uint32_t s_measurement_generation;
+extern count_record_t s_latest_minute;
+extern bool s_latest_minute_valid;
+extern int64_t s_bme280_sample_uptime_ms;
 extern bool s_fpga_clock_on;
 extern bool s_fpga_clock_is_clkout;
 extern esp_clock_output_mapping_handle_t s_fpga_clkout;
@@ -244,7 +263,9 @@ void clear_live_counts(void);
 bool counting_is_enabled(void);
 esp_err_t init_counters(void);
 void snapshot_counts(uint32_t out[COUNT_CHANNELS], bool reset);
-void print_and_reset_counts(void);
+void print_live_counts(void);
+bool physics_ready_locked(void);
+void count_csv_record(const count_record_t *record, char *line, size_t line_len);
 void counter_task(void *arg);
 void console_task(void *arg);
 void sanitize_run_label(const char *input, char *output, size_t output_len);
@@ -259,6 +280,11 @@ void sd_append_env_average(time_t epoch, uint32_t samples, double temp_c, double
 esp_err_t init_bme280(void);
 void bme280_task(void *arg);
 esp_err_t init_ble_broadcast(void);
+esp_err_t request_physics_run(void);
+esp_err_t set_wifi_keep_on(bool enabled);
+esp_err_t detector_reinitialize(void);
+void detector_lock(void);
+void detector_unlock(void);
 esp_err_t start_wifi_ap(void);
 esp_err_t start_webserver(void);
 void auto_power_save_task(void *arg);

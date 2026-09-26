@@ -49,20 +49,13 @@ Use the page to:
 - Reload startup DAC settings.
 - Keep Wi-Fi on or allow auto-off.
 
-## BLE Quick-Look Display
+## iPhone and Bluetooth monitoring
 
-For low-noise field checks, use the ESP32-S3-GEEK display instead of keeping the Wi-Fi page open. The P4 broadcasts live count snapshots over BLE, and the S3 screen passively listens.
+Open the iPhone app, press **Start Logging**, and wait for a connection. It shows all seven minute counts and cumulative physics totals, raw/corrected charts, and a Live Activity. GPS and phone metadata stay in the local phone log. The app's **Detector** tab provides the web controls and SD downloads over Bluetooth.
 
-The display shows:
+MuonP4 also runs a 350 ms advertising window about every 15 seconds. Active-scan responses contain three main coincidence counts, temperature, pressure and flags. All seven full cumulative counters require the connected telemetry characteristic. The old S3-GEEK decoder is not compatible with this new format.
 
-- live `01`, `02`, `12`, and `012` coincidence counts
-- raw `G6`, `G5`, and `G16` channels
-- HV byte and counting state
-- SD card status
-- FPGA and time-sync status
-- stale-packet warning if the P4 is not heard
-
-The display is only a quick readout. The SD card files on the P4 are still the scientific record.
+See the [iPhone guide](iphone-guide.md) and [Bluetooth protocol](bluetooth-protocol.md). SD files remain the scientific record; BLE interference and background phone behavior still need a hardware trial.
 
 ## Run Label
 
@@ -88,7 +81,7 @@ Recommended field sequence:
 5. Let browser time sync.
 6. Set a run label.
 7. Confirm counts look reasonable.
-8. Press **Turn Wi-Fi Off**, or simply let auto-off happen.
+8. Press **Start Physics Run**, or simply let auto-off happen.
 
 When Wi-Fi is turned off:
 
@@ -98,9 +91,10 @@ When Wi-Fi is turned off:
 - HV is restored.
 - The detector waits the normal 10-second settle time.
 - Counting and SD logging continue.
-- BLE live display advertisements continue.
+- BLE advertising and connected telemetry continue.
+- A fresh complete stable minute is required before a physics-valid record.
 
-Wi-Fi remains off until the next reset or power cycle.
+Wi-Fi auto-off occurs after 120 continuous seconds without a Wi-Fi client. A departing client starts a fresh countdown; Keep Wi-Fi On suspends it. Bluetooth clients do not suspend Wi-Fi auto-off. Wi-Fi remains off until the next reset or power cycle.
 
 ## End Of Run
 

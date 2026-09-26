@@ -27,7 +27,7 @@ If the filename already exists, a suffix such as `_01` is added.
 ## Muon CSV Columns
 
 ```csv
-epoch,iso,ch01_p13,ch02_p12,ch12_p11,ch012_p22,gpio6_p31,gpio5_p29,gpio16_p36
+epoch,iso,ch01_p13,ch02_p12,ch12_p11,ch012_p22,gpio6_p31,gpio5_p29,gpio16_p36,sequence,uptime_ms,interval_ms,physics_valid,wifi_off,hv_settled,time_set,env_valid,temp_c,pressure_hpa
 ```
 
 | Column | Meaning |
@@ -42,7 +42,16 @@ epoch,iso,ch01_p13,ch02_p12,ch12_p11,ch012_p22,gpio6_p31,gpio5_p29,gpio16_p36
 | `gpio5_p29` | raw channel output |
 | `gpio16_p36` | raw channel output |
 
-One row is written every 60 seconds while counting is enabled.
+| `sequence` | Completed-record sequence for this boot |
+| `uptime_ms` | Monotonic sample-end uptime |
+| `interval_ms` | Actual integration duration; normalize rates using this |
+| `physics_valid` | Complete stable physics interval, 0 or 1 |
+| `wifi_off`, `hv_settled` | Operating-state flags at completion |
+| `time_set` | Clock had been synchronized |
+| `env_valid` | Fresh valid sensor values were available at completion |
+| `temp_c`, `pressure_hpa` | Detector environmental snapshot; blank if invalid |
+
+Completed setup minutes are retained with `physics_valid=0`. Physics totals include only completed valid intervals. HV/generation transitions discard the partial window and begin a new full integration. Normally a row spans about 60 seconds; delayed intervals over 61 seconds are not physics-valid. Select valid rows and divide counts by `interval_ms / 60000` for counts/minute.
 
 No row is written while:
 
@@ -73,3 +82,7 @@ The newest live minute row is also available at:
 ```text
 http://192.168.4.1/api/latest.txt
 ```
+
+## iPhone export
+
+The phone exports JSON Lines containing raw full telemetry, cumulative count differences, exposure, correction settings, corrected combined rate, GPS metadata and phone state. Values from setup or invalid sensors are not silently corrected. See [examples](iphone-guide.md#correction-example) and the [wire format](bluetooth-protocol.md). Existing CSV readers should accept the appended columns rather than assume exactly nine columns.
