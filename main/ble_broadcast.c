@@ -26,7 +26,8 @@ static const ble_uuid128_t response_uuid = BLE_UUID128_INIT(
 static uint16_t control_response_handle;
 static uint8_t own_addr_type, device_id[6];
 static uint64_t boot_id;
-static bool ready, subscribed;
+static bool ready, subscribed, encrypted;
+static int64_t connected_at_ms;
 static uint16_t connection = BLE_HS_CONN_HANDLE_NONE, value_handle;
 static portMUX_TYPE ble_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -88,16 +89,23 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     (void)arg;
     if (event->type == BLE_GAP_EVENT_CONNECT && event->connect.status == 0) {
         portENTER_CRITICAL(&ble_mux);
-        connection=event->connect.conn_handle; subscribed=false;
+        connection=event->connect.conn_handle; subscribed=false; encrypted=false;
+        connected_at_ms=esp_timer_get_time()/1000;
         portEXIT_CRITICAL(&ble_mux);
-        // A central may choose different parameters. Notifications do not imply
-        // only one RF transmission per minute: the connection has keepalives.
-        struct ble_gap_upd_params p={.itvl_min=756,.itvl_max=768,.latency=1,.supervision_timeout=600};
-        ble_gap_update_params(event->connect.conn_handle,&p);
+        // Request pairing explicitly: some CoreBluetooth centrals return an
+        // encryption error on the first protected write instead of pairing.
+        // Keep the initial connection fast while security is negotiated.
+        int rc=ble_gap_security_initiate(event->connect.conn_handle);
+        if(rc && rc!=BLE_HS_EALREADY) ESP_LOGW(TAG,"BLE security request rc=%d",rc);
+    } else if (event->type == BLE_GAP_EVENT_ENC_CHANGE) {
+        struct ble_gap_conn_desc desc;
+        bool secure=ble_gap_conn_find(event->enc_change.conn_handle,&desc)==0 && desc.sec_state.encrypted;
+        portENTER_CRITICAL(&ble_mux); encrypted=secure; portEXIT_CRITICAL(&ble_mux);
+        ESP_LOGW(TAG,"BLE encryption status=%d encrypted=%d",event->enc_change.status,secure);
     } else if (event->type == BLE_GAP_EVENT_DISCONNECT) {
         ble_control_disconnected();
         portENTER_CRITICAL(&ble_mux);
-        connection=BLE_HS_CONN_HANDLE_NONE; subscribed=false;
+        connection=BLE_HS_CONN_HANDLE_NONE; subscribed=false; encrypted=false;
         portEXIT_CRITICAL(&ble_mux);
     } else if (event->type == BLE_GAP_EVENT_SUBSCRIBE) {
         portENTER_CRITICAL(&ble_mux);
@@ -143,11 +151,12 @@ static void payload_task(void *arg)
     uint16_t last_conn=BLE_HS_CONN_HANDLE_NONE;
     while (true) {
         portENTER_CRITICAL(&ble_mux);
-        bool synced=ready, notify=subscribed;
+        bool synced=ready, notify=subscribed, secure=encrypted;
+        int64_t connected_at=connected_at_ms;
         uint16_t conn=connection;
         portEXIT_CRITICAL(&ble_mux);
         int64_t now=esp_timer_get_time()/1000;
-        bool want_fast=ble_control_recent();
+        bool want_fast=ble_control_recent() || (!secure && conn!=BLE_HS_CONN_HANDLE_NONE && now-connected_at<30000);
         if(synced && conn!=BLE_HS_CONN_HANDLE_NONE && (want_fast!=fast || conn!=last_conn)) {
             struct ble_gap_upd_params p={.itvl_min=want_fast?12:756,.itvl_max=want_fast?24:768,
                 .latency=want_fast?0:1,.supervision_timeout=600};
@@ -177,7 +186,7 @@ static void payload_task(void *arg)
 static void on_reset(int reason) {
     ble_control_disconnected();
     portENTER_CRITICAL(&ble_mux);
-    ready=false; connection=BLE_HS_CONN_HANDLE_NONE; subscribed=false;
+    ready=false; connection=BLE_HS_CONN_HANDLE_NONE; subscribed=false; encrypted=false;
     portEXIT_CRITICAL(&ble_mux);
     ESP_LOGW(TAG,"BLE host reset reason=%d",reason);
 }
@@ -199,6 +208,9 @@ esp_err_t init_ble_broadcast(void)
     ble_svc_gap_init(); ble_svc_gatt_init();
     if (ble_svc_gap_device_name_set(BLE_DEVICE_NAME) || ble_gatts_count_cfg(services) || ble_gatts_add_svcs(services))
         return ESP_FAIL;
+    ble_hs_cfg.sm_io_cap=BLE_HS_IO_NO_INPUT_OUTPUT;
+    ble_hs_cfg.sm_our_key_dist=BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist=BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_bonding=1;
     ble_hs_cfg.sm_sc=1;
     ret=ble_control_init(&control_response_handle);

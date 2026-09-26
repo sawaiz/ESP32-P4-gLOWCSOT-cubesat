@@ -96,7 +96,7 @@ Use the web UI before Wi-Fi turns off, or read the CSV file from the SD card aft
 - Check that the detector is running protocol-v4 firmware; an older image may have no BLE service or an incompatible payload.
 - Advertising is sparse: keep the app open near the detector until connected. The primary service UUID is `73B47A10-6F6E-4D75-9A50-4D756F6E5034`.
 - One phone connection is supported. Stop logging on another connected phone first.
-- Full controls require encrypted pairing; accept the iPhone pairing prompt when using them.
+- Full controls require encrypted pairing; accept the pairing prompt when connecting. The peripheral explicitly requests pairing and exchanges bonding keys.
 - After force-quitting, reopen and start logging again. A Live Activity does not remove all iOS background restrictions.
 - Overdue readings are stale, not zero counts. Reconnection can recover cumulative totals within the same boot, but not missed minute-by-minute environmental data.
 - The C6 firmware must support hosted BLE as well as Wi-Fi. A successful P4 build alone cannot verify the installed C6 image.

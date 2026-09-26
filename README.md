@@ -12,7 +12,7 @@ ESP-IDF firmware and a native iPhone companion for a gLOWCOST/MPPC cosmic-muon d
 - **Full detector controls over Bluetooth:** time sync, run labels, Wi-Fi power controls, HV, FPGA, DAC, environmental status, current/recent logs and previous SD-file downloads continue to work after Wi-Fi shuts down.
 - **GPS and phone metadata:** local JSONL logs include location, fix age/accuracy, altitude, phone battery state and correction settings. GPS is never broadcast by the detector.
 
-**Validation:** firmware, iPhone simulator and unsigned iPhone Release builds pass; shared C/Swift protocol tests pass. The screenshots below are native simulator captures with **synthetic data**, not a detector measurement. The new firmware has not yet been flashed or tested with the physical detector. [Verification and hardware checks](docs/verification.md).
+**Validation:** firmware, iPhone simulator and unsigned iPhone Release builds pass; shared C/Swift protocol tests pass. The screenshots below are native simulator captures with **synthetic data**, not a detector measurement. Physical P4 testing has verified boot, the 120-second Wi-Fi timeout, HV settling and Bluetooth telemetry after Wi-Fi shutdown. Encrypted controls, clock sync, manual Start Physics Run and Bluetooth SD-log downloads also pass. Physical iPhone testing remains pending. [Verification and hardware checks](docs/verification.md).
 
 ## iPhone preview
 

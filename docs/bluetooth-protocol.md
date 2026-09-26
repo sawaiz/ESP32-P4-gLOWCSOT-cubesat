@@ -35,6 +35,8 @@ All share the service suffix `-6F6E-4D75-9A50-4D756F6E5034`:
 | 73B47A12 | Command JSON | Write with response; encrypted link required |
 | 73B47A13 | Command result JSON | Read, Notify; encrypted reads |
 
+Connections explicitly request Just Works pairing and exchange encryption/identity keys for bonding. The initial connection requests a short interval while pairing (up to 30 seconds), then returns to the quiet interval after encryption succeeds. Telemetry remains readable without encryption; detector controls retain encrypted-link requirements. This provides link encryption, not owner authentication or MITM protection.
+
 Telemetry notifications are **8-byte heartbeat/change tokens**, not truncated telemetry: `M N 04 flags sequence:u32`. On notification, read the complete telemetry characteristic. The preferred ATT MTU is 247; smaller-MTU long reads use a stable cached snapshot. A connection can still generate keepalive traffic between these 15-second notifications.
 
 ### 160-byte telemetry value
