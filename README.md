@@ -2,6 +2,15 @@
 
 ESP-IDF firmware and a native iPhone companion for a gLOWCOST/MPPC cosmic-muon detector on the Waveshare ESP32-P4 Module DEV KIT.
 
+## September 27: auditable records and phone recovery
+
+- **Standalone detector logging stays independent of the phone.** Hardware identity is v2.2 with three connected paddles; the fourth channel is unconnected.
+- **Every completed minute now records** DAC start/end codes, HV state, humidity, UTC/monotonic timing, last clock sync, raw and physics cumulative counts, radio state, quality flags, firmware SHA and FPGA hash.
+- **Resumable recovery and GPS on SD:** the [iOS 2.1 app](https://github.com/muonTelescope/gLowCost-iOs) recovers verified records across reconnects/reboots and uploads GPS or explicitly assigned stationary locations to a separate SD companion file. Detector measurements remain immutable.
+- **Temperature compensation stays in physics data**, flagged with the DAC changes. HV/Wi-Fi/manual-DAC transitions still restart qualification.
+
+See the [schema, protocol, examples and limits](docs/RECORD-SCHEMA-5.md). Unsupported fourfold and physical HV readback are blank, not fabricated. Host tests and builds pass; this update has **not been flashed**, and end-to-end schema-5 testing on the detector/iPhone remains pending. The bundled `MuonMonitor/` source and screenshots below are the earlier companion; use the separate iOS repository for the current app.
+
 ## New features
 
 - **Two-minute Wi-Fi setup:** 120 seconds without a connected Wi-Fi client, 100 ms AP beacons, and a **Start Physics Run** button in the web interface and iPhone app.
@@ -52,7 +61,7 @@ Wi-Fi setup: SSID **MuonReadout**, password **glowcost**, address **http://192.1
 ## Current Hardware Profile
 
 - Controller: Waveshare ESP32-P4 Module DEV KIT, tested on ESP32-P4 rev v1.3.
-- Readout board: gLOWCOST/MPPC Raspberry Pi HAT-style detector interface.
+- Readout board: gLOWCOST/MPPC v2.2, hardware commit `677fb1b10999e2f20cf2f02e3deb845203625162`; three connected paddles, fourth analog channel unconnected.
 - FPGA: iCE40 programmed from embedded `main/fpga.bin`.
 - Active FPGA bitstream: `top_50MHz_led100_dt200_pi10us.bin` from the Oct-2025 readout repository.
 - High voltage: MAX1932 controlled over SPI, startup byte `0xea`.

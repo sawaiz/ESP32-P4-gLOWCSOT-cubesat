@@ -1,4 +1,5 @@
 #include "app_common.h"
+#include "count_totals.h"
 #include "measurement_window.h"
 
 // GPIO interrupt hook for the FPGA counter outputs. It only increments a RAM
@@ -10,7 +11,7 @@ static void IRAM_ATTR count_isr(void *arg)
     uintptr_t index = (uintptr_t)arg;
     if (s_counting_enabled && index < COUNT_CHANNELS) {
         portENTER_CRITICAL_ISR(&s_count_mux);
-        s_counts[index]++;
+        if(s_counts[index]!=UINT32_MAX)s_counts[index]++;
         portEXIT_CRITICAL_ISR(&s_count_mux);
     }
 }
@@ -90,12 +91,14 @@ static bool append_log_record(count_record_t *record, const measurement_window_t
         s_bme280_latest.pressure_hpa > 0 && s_bme280_latest.pressure_hpa < 167772.15;
     record->temp_c = record->env_valid ? s_bme280_latest.temp_c : 0;
     record->pressure_hpa = record->env_valid ? s_bme280_latest.pressure_hpa : 0;
+    bool overflow;
+    record->physics_valid = count_totals_accumulate(s_totals, s_physics_totals,
+        record->counts, COUNT_CHANNELS, record->physics_valid, &overflow);
     memcpy(s_last_counts, record->counts, sizeof(s_last_counts));
-    for (size_t i = 0; i < COUNT_CHANNELS; i++) {
-        s_totals[i] += record->counts[i];
-        if (record->physics_valid) s_physics_totals[i] += record->counts[i];
-    }
     if (record->physics_valid) s_physics_exposure_ms += record->interval_ms;
+    audit_capture(&record->audit);
+    if(overflow)record->audit.quality|=Q_OVERFLOW;
+    if(!record->env_valid)record->audit.humidity=NAN;
     s_latest_minute = *record;
     s_latest_minute_valid = true;
     s_log[s_log_head] = *record;
@@ -103,6 +106,7 @@ static bool append_log_record(count_record_t *record, const measurement_window_t
     if (s_log_count < LOG_RECORDS) {
         s_log_count++;
     }
+    audit_begin(record->uptime_ms);
     portEXIT_CRITICAL(&s_state_mux);
     sd_append_record(record);
     return true;
@@ -136,6 +140,7 @@ void counter_task(void *arg)
         window_action_t action = measurement_window_step(&window, now_ms, generation, enabled, ready);
         if (action == WINDOW_RESET) {
             clear_live_counts();
+            portENTER_CRITICAL(&s_state_mux);audit_begin(now_ms);portEXIT_CRITICAL(&s_state_mux);
         } else if (action == WINDOW_COMPLETE) {
             count_record_t record = {
                 .uptime_ms = now_ms,

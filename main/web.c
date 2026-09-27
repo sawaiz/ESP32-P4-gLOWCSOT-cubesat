@@ -221,7 +221,7 @@ static esp_err_t log_csv_handler(httpd_req_t *req)
     if(!records)return httpd_resp_send_err(req,HTTPD_500_INTERNAL_SERVER_ERROR,"out of memory");
     httpd_resp_set_type(req, "text/csv");
     httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=muon_log.csv");
-    char header[384];
+    char header[RECORD_CSV_SIZE];
     count_csv_header(header, sizeof(header));
     httpd_resp_sendstr_chunk(req, header);
 
@@ -234,7 +234,7 @@ static esp_err_t log_csv_handler(httpd_req_t *req)
     }
     portEXIT_CRITICAL(&s_state_mux);
 
-    char line[384];
+    char line[RECORD_CSV_SIZE];
     for (size_t i = 0; i < count; i++) {
         count_csv_record(&records[i], line, sizeof(line));
         httpd_resp_sendstr_chunk(req, line);
@@ -263,7 +263,7 @@ static esp_err_t latest_txt_handler(httpd_req_t *req)
         return httpd_resp_sendstr(req, "waiting for first minute record\n");
     }
 
-    char line[384];
+    char line[RECORD_CSV_SIZE];
     count_csv_record(&record, line, sizeof(line));
     return httpd_resp_sendstr(req, line);
 }
@@ -284,10 +284,12 @@ static esp_err_t time_handler(httpd_req_t *req)
         .tv_sec = (time_t)epoch,
         .tv_usec = 0,
     };
+    struct timeval before;gettimeofday(&before,NULL);
     ESP_RETURN_ON_ERROR(settimeofday(&tv, NULL), TAG, "set time");
     portENTER_CRITICAL(&s_state_mux);
     s_time_set = true;
     portEXIT_CRITICAL(&s_state_mux);
+    audit_clock(2,(int64_t)before.tv_sec*1000+before.tv_usec/1000,(int64_t)epoch*1000,-1);
     // If the run started before the phone/browser set time, reconstruct the
     // likely boot timestamp and rename the active files to match it.
     if (s_run_start_epoch <= 1600000000 && s_run_start_uptime_ms > 0) {
@@ -842,10 +844,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     if (event_id == WIFI_EVENT_AP_START || event_id == WIFI_EVENT_AP_STOP) {
         portENTER_CRITICAL(&s_state_mux);
         s_measurement_generation++;
-        if (event_id == WIFI_EVENT_AP_START) {
-            s_wifi_stopped = false;
-        }
+        s_wifi_stopped = event_id == WIFI_EVENT_AP_STOP;
         portEXIT_CRITICAL(&s_state_mux);
+        audit_event(Q_WIFI,"wifi",-1,event_id==WIFI_EVENT_AP_START);
+        ESP_LOGW(TAG,"Wi-Fi radio event: AP_%s",event_id==WIFI_EVENT_AP_START?"START":"STOP");
     } else if (event_id == WIFI_EVENT_AP_STACONNECTED) {
         portENTER_CRITICAL(&s_state_mux);
         s_wifi_idle_since_ms = esp_timer_get_time() / 1000;
@@ -853,7 +855,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             s_wifi_clients++;
         }
         portEXIT_CRITICAL(&s_state_mux);
-        ESP_LOGI(TAG, "Wi-Fi client connected");
+        ESP_LOGW(TAG, "Wi-Fi client connected");
     } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         portENTER_CRITICAL(&s_state_mux);
         s_wifi_idle_since_ms = esp_timer_get_time() / 1000;
@@ -861,7 +863,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             s_wifi_clients--;
         }
         portEXIT_CRITICAL(&s_state_mux);
-        ESP_LOGI(TAG, "Wi-Fi client disconnected");
+        ESP_LOGW(TAG, "Wi-Fi client disconnected");
     }
 }
 
@@ -915,7 +917,7 @@ esp_err_t start_webserver(void)
     // convenience interface; GPIO counting is the measurement.
     config.core_id = 1;
     config.task_priority = tskIDLE_PRIORITY + 3;
-    config.stack_size = 8192;
+    config.stack_size = 16384;
     config.max_uri_handlers = 20;
     config.lru_purge_enable = true;
 

@@ -328,7 +328,7 @@ static esp_err_t dacx578_write_channel(uint8_t ch, uint16_t code10)
 }
 
 // Set one DAC channel and mirror the value in RAM for status and compensation.
-static esp_err_t dac_set_channel_impl(uint8_t ch, uint16_t value)
+static esp_err_t dac_set_channel_impl(uint8_t ch, uint16_t value, bool temperature)
 {
     esp_err_t ret;
 #if READOUT_PROFILE_OCT2025
@@ -339,8 +339,10 @@ static esp_err_t dac_set_channel_impl(uint8_t ch, uint16_t value)
     if (ret == ESP_OK && ch < 8) {
         portENTER_CRITICAL(&s_state_mux);
         s_dac_codes[ch] = value & 0x03ff;
+        audit_mark_locked(Q_DAC | (temperature ? Q_TEMP : 0));
         portEXIT_CRITICAL(&s_state_mux);
     }
+    if(ret==ESP_OK)audit_event(0,temperature?"temp_comp":"dac",ch,value);
     return ret;
 }
 
@@ -390,6 +392,7 @@ esp_err_t hv_write_byte(uint8_t value)
     portENTER_CRITICAL(&s_state_mux);
     s_hv_byte = value;
     portEXIT_CRITICAL(&s_state_mux);
+    audit_event(Q_HV,"hv",-1,value);
     ESP_LOGW(TAG, "MAX1932/HV byte set to 0x%02x", value);
     return ESP_OK;
 }
@@ -460,9 +463,17 @@ esp_err_t program_fpga(void) {
 esp_err_t dac_set_channel(uint8_t ch, uint16_t value) {
     detector_lock();
     portENTER_CRITICAL(&s_state_mux); s_measurement_generation++; portEXIT_CRITICAL(&s_state_mux);
-    esp_err_t ret=dac_set_channel_impl(ch,value);
+    esp_err_t ret=dac_set_channel_impl(ch,value,false);
     portENTER_CRITICAL(&s_state_mux); s_measurement_generation++; portEXIT_CRITICAL(&s_state_mux);
     detector_unlock(); return ret;
+}
+
+// Automatic bounded compensation is retained in physics, with start/end codes
+// and an explicit update flag. Manual DAC changes still reset the window.
+esp_err_t dac_set_temperature_channel(uint8_t ch, uint16_t value) {
+    detector_lock();
+    esp_err_t ret=dac_set_channel_impl(ch,value,true);
+    detector_unlock();return ret;
 }
 
 esp_err_t dac_zero_channels(void) {

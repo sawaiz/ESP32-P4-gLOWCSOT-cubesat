@@ -25,7 +25,7 @@ static const ble_uuid128_t response_uuid = BLE_UUID128_INIT(
     0x34,0x50,0x6e,0x6f,0x75,0x4d,0x50,0x9a,0x75,0x4d,0x6e,0x6f,0x13,0x7a,0xb4,0x73);
 static uint16_t control_response_handle;
 static uint8_t own_addr_type, device_id[6];
-static uint64_t boot_id;
+
 static bool ready, subscribed, encrypted;
 static int64_t connected_at_ms;
 static uint16_t connection = BLE_HS_CONN_HANDLE_NONE, value_handle;
@@ -33,7 +33,7 @@ static portMUX_TYPE ble_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static telemetry_sample_t current_sample(void)
 {
-    telemetry_sample_t t = {.boot_id=boot_id};
+    telemetry_sample_t t = {.boot_id=audit_boot_id};
     memcpy(t.device_id, device_id, sizeof(device_id));
     portENTER_CRITICAL(&s_state_mux);
     count_record_t r = s_latest_minute;
@@ -89,6 +89,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     (void)arg;
     if (event->type == BLE_GAP_EVENT_CONNECT && event->connect.status == 0) {
         portENTER_CRITICAL(&ble_mux);
+        portENTER_CRITICAL(&s_state_mux);audit_ble_connected=true;portEXIT_CRITICAL(&s_state_mux);
         connection=event->connect.conn_handle; subscribed=false; encrypted=false;
         connected_at_ms=esp_timer_get_time()/1000;
         portEXIT_CRITICAL(&ble_mux);
@@ -105,6 +106,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     } else if (event->type == BLE_GAP_EVENT_DISCONNECT) {
         ble_control_disconnected();
         portENTER_CRITICAL(&ble_mux);
+        portENTER_CRITICAL(&s_state_mux);audit_ble_connected=false;portEXIT_CRITICAL(&s_state_mux);
         connection=BLE_HS_CONN_HANDLE_NONE; subscribed=false; encrypted=false;
         portEXIT_CRITICAL(&ble_mux);
     } else if (event->type == BLE_GAP_EVENT_SUBSCRIBE) {
@@ -140,6 +142,7 @@ static void advertise(bool connected)
     struct ble_gap_adv_params params={.conn_mode=connected ? BLE_GAP_CONN_MODE_NON : BLE_GAP_CONN_MODE_UND,.disc_mode=BLE_GAP_DISC_MODE_GEN,
         .itvl_min=BLE_GAP_ADV_ITVL_MS(BLE_BURST_INTERVAL_MS),.itvl_max=BLE_GAP_ADV_ITVL_MS(BLE_BURST_INTERVAL_MS)};
     rc=ble_gap_adv_start(own_addr_type,NULL,BLE_BURST_DURATION_MS,&params,gap_event,NULL);
+    if(!rc){portENTER_CRITICAL(&s_state_mux);audit_ble_advertising=true;portEXIT_CRITICAL(&s_state_mux);}
     if (rc) ESP_LOGW(TAG,"BLE advertisement start rc=%d",rc);
 }
 
@@ -176,6 +179,7 @@ static void payload_task(void *arg)
             struct os_mbuf *om=ble_hs_mbuf_from_flat(token,sizeof(token));
             if (om) {
                 int rc=ble_gatts_notify_custom(conn,value_handle,om);
+                if(!rc){portENTER_CRITICAL(&s_state_mux);audit_notifications++;portEXIT_CRITICAL(&s_state_mux);}
                 if (rc) ESP_LOGW(TAG,"BLE notify rc=%d",rc);
             }
             next_update=now+BLE_BROADCAST_PERIOD_MS;
@@ -199,7 +203,7 @@ static void on_sync(void) {
 static void host_task(void *arg) { (void)arg; nimble_port_run(); nimble_port_freertos_deinit(); }
 esp_err_t init_ble_broadcast(void)
 {
-    esp_fill_random(&boot_id,sizeof(boot_id));
+
     esp_read_mac(device_id,ESP_MAC_BASE);
     esp_err_t ret=nimble_port_init();
     if (ret!=ESP_OK) return ret;

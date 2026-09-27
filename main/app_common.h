@@ -145,6 +145,8 @@
 extern const uint8_t fpga_bin_start[] asm("_binary_fpga_bin_start");
 extern const uint8_t fpga_bin_end[] asm("_binary_fpga_bin_end");
 
+#include "audit.h"
+
 // A minute record is kept in RAM for the live web page and also written to SD.
 // CSV includes uptime and validity so setup cannot masquerade as physics.
 typedef struct {
@@ -160,6 +162,7 @@ typedef struct {
     bool env_valid;
     double temp_c;
     double pressure_hpa;
+    record_audit_t audit;
 } count_record_t;
 
 typedef struct {
@@ -256,6 +259,7 @@ esp_err_t init_spi(void);
 esp_err_t init_i2c_bus(void);
 esp_err_t program_fpga(void);
 esp_err_t dac_set_channel(uint8_t ch, uint16_t value);
+esp_err_t dac_set_temperature_channel(uint8_t ch, uint16_t value);
 esp_err_t dac_zero_channels(void);
 esp_err_t hv_write_byte(uint8_t value);
 esp_err_t hv_write_and_settle(uint8_t value);

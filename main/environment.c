@@ -266,7 +266,7 @@ static void temp_compensate_dac(double temp_avg_c, double temp_std_c, uint32_t s
             continue;
         }
 
-        esp_err_t ret = dac_set_channel(ch, target);
+        esp_err_t ret = dac_set_temperature_channel(ch, target);
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "temp compensation CH%u: T=%.3fC dT=%.3fC 0x%03x -> 0x%03x",
                      ch, temp_avg_c, dtemp, prev, target);

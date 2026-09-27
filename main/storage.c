@@ -47,8 +47,8 @@ void csv_time_string(time_t epoch, char *out, size_t out_len)
 {
     if (epoch > 1600000000) {
         struct tm tm;
-        localtime_r(&epoch, &tm);
-        strftime(out, out_len, "%Y-%m-%dT%H:%M:%S", &tm);
+        gmtime_r(&epoch, &tm);
+        strftime(out, out_len, "%Y-%m-%dT%H:%M:%SZ", &tm);
     } else {
         snprintf(out, out_len, "unset");
     }
@@ -65,7 +65,8 @@ void count_csv_header(char *out, size_t out_len)
         }
     }
     if (off + 1 < out_len) {
-        snprintf(out + off, out_len - off, ",sequence,uptime_ms,interval_ms,physics_valid,wifi_off,hv_settled,time_set,env_valid,temp_c,pressure_hpa\n");
+        snprintf(out + off, out_len - off, ",sequence,uptime_ms,interval_ms,physics_valid,wifi_off,hv_settled,time_set,env_valid,temp_c,pressure_hpa");
+        audit_csv_header(out, out_len);
     }
 }
 
@@ -79,9 +80,12 @@ void count_csv_record(const count_record_t *r, char *out, size_t size)
     for (size_t i = 0; i < COUNT_CHANNELS && off < size; ++i)
         off += snprintf(out + off, size - off, ",%" PRIu32, r->counts[i]);
     if (off < size) snprintf(out + off, size - off,
-        ",%" PRIu32 ",%" PRId64 ",%" PRIu32 ",%d,%d,%d,%d,%d,%s\n",
+        ",%" PRIu32 ",%" PRId64 ",%" PRIu32 ",%d,%d,%d,%d,%d,%s",
         r->sequence, r->uptime_ms, r->interval_ms, r->physics_valid,
         r->wifi_off, r->hv_settled, r->time_set, r->env_valid, env);
+    audit_csv_record(&r->audit,out,size);
+    for(int i=0;i<7;i++){size_t n=strlen(out);if(n<size)snprintf(out+n,size-n,",%"PRIu64",%"PRIu64",%.6f",r->audit.totals[i],r->audit.physics_totals[i],r->interval_ms?60000.0*r->counts[i]/r->interval_ms:0);}
+    size_t n=strlen(out);if(n+1<size){out[n]='\n';out[n+1]=0;}
 }
 
 // Construct the full SD path for either the muon or environment file, including
@@ -176,7 +180,7 @@ static esp_err_t sd_refresh_one_path_locked(char *path, size_t path_len, const c
 // slower environment-average file.
 esp_err_t sd_refresh_log_path_locked(void)
 {
-    char count_header[384];
+    static char count_header[RECORD_CSV_SIZE]; // protected by s_sd_mutex
     count_csv_header(count_header, sizeof(count_header));
     esp_err_t ret = sd_refresh_one_path_locked(
         s_log_path, sizeof(s_log_path), "muon", count_header);
@@ -270,12 +274,13 @@ void sd_append_record(const count_record_t *record)
         return;
     }
 
-    char line[384];
+    char line[RECORD_CSV_SIZE];
     count_csv_record(record, line, sizeof(line));
     bool ok=fputs(line,f)>=0;
     if(fflush(f)!=0)ok=false;
     if(fsync(fileno(f))!=0)ok=false;
     if(fclose(f)!=0)ok=false;
+    ok=audit_store_record(record->sequence,line)&&ok;
     portENTER_CRITICAL(&s_state_mux);s_sd_write_ok=ok;portEXIT_CRITICAL(&s_state_mux);
     if(!ok)ESP_LOGE(TAG,"SD count write/flush failed");
     xSemaphoreGive(s_sd_mutex);

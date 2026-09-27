@@ -1,0 +1,4 @@
+#define BUILD_GIT_SHA "@AUDIT_GIT@"
+#define BUILD_DIRTY @AUDIT_DIRTY@
+#define BUILD_UTC "@AUDIT_DATE@"
+#define FPGA_SHA "@AUDIT_FPGA@"

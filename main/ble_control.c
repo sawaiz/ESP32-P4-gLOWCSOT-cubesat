@@ -39,6 +39,7 @@ static void add_counts(cJSON *r) {
 }
 static void execute(cJSON *j,cJSON *r) {
     const char *op=str(j,"op"); double a,b; esp_err_t ret=ESP_OK;
+    if(audit_command(j,r))return;
     if (!strcmp(op,"status")) {
         portENTER_CRITICAL(&s_state_mux);
         bool keep=s_wifi_keep_on,off=s_wifi_stopped,pending=s_shutdown_pending;
@@ -52,6 +53,38 @@ static void execute(cJSON *j,cJSON *r) {
             cJSON_AddStringToObject(r,"label",s_run_label);cJSON_AddStringToObject(r,"log",strrchr(s_log_path,'/')?strrchr(s_log_path,'/')+1:s_log_path);
             cJSON_AddStringToObject(r,"env",strrchr(s_env_log_path,'/')?strrchr(s_env_log_path,'/')+1:s_env_log_path);
             xSemaphoreGive(s_sd_mutex);}
+    } else if (!strcmp(op,"wifi_status")) {
+        // Query the radio through Hosted, rather than only returning P4 flags.
+        // Serialize against Wi-Fi shutdown; no radio settings are changed.
+        detector_lock();
+        wifi_mode_t mode=WIFI_MODE_NULL;
+        wifi_config_t config={0};
+        wifi_sta_list_t stations={0};
+        uint8_t primary=0; wifi_second_chan_t secondary=WIFI_SECOND_CHAN_NONE;
+        int8_t power=0;
+        esp_err_t mode_err=esp_wifi_get_mode(&mode);
+        esp_err_t config_err=esp_wifi_get_config(WIFI_IF_AP,&config);
+        esp_err_t channel_err=esp_wifi_get_channel(&primary,&secondary);
+        esp_err_t stations_err=esp_wifi_ap_get_sta_list(&stations);
+        esp_err_t power_err=esp_wifi_get_max_tx_power(&power);
+        detector_unlock();
+        cJSON_AddStringToObject(r,"mode_err",esp_err_to_name(mode_err));
+        cJSON_AddStringToObject(r,"config_err",esp_err_to_name(config_err));
+        cJSON_AddStringToObject(r,"channel_err",esp_err_to_name(channel_err));
+        cJSON_AddStringToObject(r,"stations_err",esp_err_to_name(stations_err));
+        cJSON_AddStringToObject(r,"power_err",esp_err_to_name(power_err));
+        if(mode_err==ESP_OK)cJSON_AddNumberToObject(r,"mode",mode);
+        if(config_err==ESP_OK) {
+            char ssid[33];memcpy(ssid,config.ap.ssid,32);ssid[32]=0;
+            cJSON_AddStringToObject(r,"ssid",ssid);
+            cJSON_AddNumberToObject(r,"hidden",config.ap.ssid_hidden);
+            cJSON_AddNumberToObject(r,"beacon_ms",config.ap.beacon_interval);
+            cJSON_AddNumberToObject(r,"auth",config.ap.authmode);
+            cJSON_AddNumberToObject(r,"configured_channel",config.ap.channel);
+        }
+        if(channel_err==ESP_OK)cJSON_AddNumberToObject(r,"channel",primary);
+        if(stations_err==ESP_OK)cJSON_AddNumberToObject(r,"clients",stations.num);
+        if(power_err==ESP_OK)cJSON_AddNumberToObject(r,"tx_power_quarter_dbm",power);
     } else if (!strcmp(op,"counts")) { add_counts(r);
     } else if (!strcmp(op,"environment")) {
         portENTER_CRITICAL(&s_state_mux);bme280_reading_t e=s_bme280_latest;int64_t age=esp_timer_get_time()/1000-s_bme280_sample_uptime_ms;portEXIT_CRITICAL(&s_state_mux);
@@ -59,7 +92,9 @@ static void execute(cJSON *j,cJSON *r) {
         cJSON_AddNumberToObject(r,"temp_c",e.temp_c);cJSON_AddNumberToObject(r,"pressure_hpa",e.pressure_hpa);cJSON_AddNumberToObject(r,"humidity_pct",e.humidity_pct);cJSON_AddNumberToObject(r,"age_ms",age);
     } else if (!strcmp(op,"time")) {
         if(!number(j,"epoch",1600000000,4102444800,&a)){error(r,"invalid epoch");return;}
+        struct timeval before;gettimeofday(&before,NULL);
         struct timeval tv={.tv_sec=(time_t)a}; if(settimeofday(&tv,NULL)){error(r,"clock set failed");return;}
+        audit_clock(1,(int64_t)before.tv_sec*1000+before.tv_usec/1000,(int64_t)a*1000,-1);
         portENTER_CRITICAL(&s_state_mux);s_time_set=true;portEXIT_CRITICAL(&s_state_mux);
         if(s_sd_mutex){xSemaphoreTake(s_sd_mutex,portMAX_DELAY);
             if(s_run_start_epoch<=1600000000)s_run_start_epoch=(time_t)a-(esp_timer_get_time()/1000-s_run_start_uptime_ms)/1000;
@@ -116,9 +151,13 @@ static void execute(cJSON *j,cJSON *r) {
         if(has)for(size_t i=0;i<s_log_count;i++){size_t k=(s_log_head+LOG_RECORDS-s_log_count+i)%LOG_RECORDS;if(s_log[k].sequence==(uint32_t)a){rec=s_log[k];found=true;break;}}
         portEXIT_CRITICAL(&s_state_mux);
         cJSON_AddNumberToObject(r,"first",first);cJSON_AddNumberToObject(r,"last",last);
-        char csv[384];if(has&&!found){error(r,"record expired");return;}
+        char csv[RECORD_CSV_SIZE];if(has&&!found){error(r,"record expired");return;}
         if(has)count_csv_record(&rec,csv,sizeof(csv));else count_csv_header(csv,sizeof(csv));
-        cJSON_AddStringToObject(r,"csv",csv);
+        double offset=0; cJSON *o=cJSON_GetObjectItem(j,"offset");
+        if(o&&!number(j,"offset",0,RECORD_CSV_SIZE-1,&offset)){error(r,"invalid offset");return;}
+        size_t length=strlen(csv);if(offset>length){error(r,"invalid offset");return;}
+        char part[201];snprintf(part,sizeof(part),"%s",csv+(size_t)offset);
+        cJSON_AddStringToObject(r,"csv",part);cJSON_AddNumberToObject(r,"next",offset+strlen(part));cJSON_AddBoolToObject(r,"eof",offset+strlen(part)==length);
     } else { error(r,"unknown operation");return; }
     if(ret!=ESP_OK)error(r,esp_err_to_name(ret));
 }
@@ -159,5 +198,5 @@ void ble_control_disconnected(void){session++;}
 esp_err_t ble_control_init(uint16_t *handle){
     response_handle=handle;response_mutex=xSemaphoreCreateMutex();jobs=xQueueCreate(2,sizeof(control_job_t));
     if(!response_mutex||!jobs)return ESP_ERR_NO_MEM;
-    return xTaskCreatePinnedToCore(worker,"ble_control",8192,NULL,3,NULL,1)==pdPASS?ESP_OK:ESP_ERR_NO_MEM;
+    return xTaskCreatePinnedToCore(worker,"ble_control",16384,NULL,3,NULL,1)==pdPASS?ESP_OK:ESP_ERR_NO_MEM;
 }

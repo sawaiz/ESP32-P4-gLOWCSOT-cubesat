@@ -131,7 +131,7 @@ An illustrative metadata excerpt (synthetic values; not a full exported record):
 }
 ```
 
-Use **Export phone log** for JSON Lines and **Share Download** for detector CSV files. Existing exports are available through Files → On My iPhone → MuonP4. Location remains in the phone log and is not broadcast or sent to the detector. Exported files include precise location when permission was granted.
+Use **Export phone log** for JSON Lines and **Share Download** for detector CSV files. Existing exports are available through Files → On My iPhone → MuonP4. The legacy bundled app keeps location in its phone log. The current [iOS app](https://github.com/muonTelescope/gLowCost-iOs) can also synchronize location companions to SD with [schema-5 firmware](RECORD-SCHEMA-5.md); GPS is never publicly advertised. Exported files include precise location when permission was granted.
 
 ## Bluetooth formats and compatibility
 

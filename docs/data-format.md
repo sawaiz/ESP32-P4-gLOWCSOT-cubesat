@@ -1,6 +1,6 @@
 # Data Files And SD Logging
 
-The firmware creates fresh files on the SD card for each detector start.
+The firmware creates fresh files on the SD card for each detector start. **Schema 5 appends audit fields and adds record, index, event and location companion files; see [the complete schema](RECORD-SCHEMA-5.md).** The column list below describes the retained base fields.
 
 ## Muon Count File
 

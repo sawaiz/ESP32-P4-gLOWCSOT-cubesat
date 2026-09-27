@@ -16,6 +16,7 @@ static esp_err_t init_nvs(void)
 // transitions in one readable order and starts background tasks only afterward.
 void app_main(void)
 {
+    audit_init();
     ESP_LOGI(TAG, "gLOWCOST MPPC ESP32-P4 Wi-Fi readout");
     ESP_LOGW(TAG, "startup sequence: HV off, FPGA flash, DAC init, then HV 0x%02x after %d ms settle", STARTUP_HV_BYTE, HV_SETTLE_MS);
 
@@ -53,7 +54,7 @@ void app_main(void)
         ESP_LOGW(TAG, "environment logging disabled until BME280 is detected: %s", esp_err_to_name(ret));
     }
 
-    xTaskCreatePinnedToCore(counter_task, "counter_task", 4096, NULL, 8, NULL, 0);
+    xTaskCreatePinnedToCore(counter_task, "counter_task", 16384, NULL, 8, NULL, 0);
     if (s_bme280_ok) {
         xTaskCreatePinnedToCore(bme280_task, "bme280_task", 4096, NULL, 5, NULL, 1);
     }
