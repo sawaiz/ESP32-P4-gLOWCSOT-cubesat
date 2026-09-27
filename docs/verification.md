@@ -44,3 +44,7 @@ The app has not been signed/installed on a physical iPhone. Remaining checks inc
 Read-only inspection and a restored-boot capture confirmed deliberate Wi-Fi shutdown followed by HV cycling, a three-second off hold and ten-second settle. The inspected installed image was an older variant with a 20-second setup window; upstream main had shortened it to 7 seconds. No repeated boot, watchdog, brownout or transport-reset message appeared in the 125-second capture. This supports the firmware shutdown diagnosis but is not an electrical supply or RF-interference measurement.
 
 The original full P4 backup was retained privately. Device dumps, private backup manifests, raw serial captures and phone exports are not part of this repository publication. A P4 dump does not contain the separate C6 firmware or SD card.
+
+### Schema 5 device update, 2026-09-27
+
+Firmware 93fd166 was flashed to the application partition only after backing up and verifying the previous application. Flash hash verification passed. Boot capture confirmed FPGA initialization, DAC initialization, HV 0xEA, SD mounting, autonomous Wi-Fi shutdown at 120 seconds, and HV settling without a watchdog/panic in the capture. Mac telemetry read all 160 bytes: a completed physics minute had 60,000 ms exposure, valid environment readings and successful SD write status. Encrypted commands failed on this retest; full schema-5 SD transfer verification is pending. A subsequent change handles repeat pairing after a central forgets its bond; hardware verification of that recovery remains pending.

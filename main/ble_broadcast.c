@@ -98,6 +98,21 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         // Keep the initial connection fast while security is negotiated.
         int rc=ble_gap_security_initiate(event->connect.conn_handle);
         if(rc && rc!=BLE_HS_EALREADY) ESP_LOGW(TAG,"BLE security request rc=%d",rc);
+    } else if (event->type == BLE_GAP_EVENT_REPEAT_PAIRING) {
+        // Forget This Device removes the central's keys, not our saved bond.
+        // Replace only this peer's bond, without accepting a security downgrade.
+        const struct ble_gap_repeat_pairing *rp=&event->repeat_pairing;
+        struct ble_gap_conn_desc desc;
+        if (rp->new_key_size < rp->cur_key_size ||
+            (rp->cur_sc && !rp->new_sc) ||
+            (rp->cur_authenticated && !rp->new_authenticated) ||
+            !rp->new_bonding || ble_gap_conn_find(rp->conn_handle,&desc)!=0) {
+            ESP_LOGW(TAG,"BLE repeat pairing rejected: incompatible security");
+            return BLE_GAP_REPEAT_PAIRING_IGNORE;
+        }
+        int rc=ble_store_util_delete_peer(&desc.peer_id_addr);
+        ESP_LOGW(TAG,"BLE repeat pairing: replace peer bond rc=%d",rc);
+        return rc==0 ? BLE_GAP_REPEAT_PAIRING_RETRY : BLE_GAP_REPEAT_PAIRING_IGNORE;
     } else if (event->type == BLE_GAP_EVENT_ENC_CHANGE) {
         struct ble_gap_conn_desc desc;
         bool secure=ble_gap_conn_find(event->enc_change.conn_handle,&desc)==0 && desc.sec_state.encrypted;

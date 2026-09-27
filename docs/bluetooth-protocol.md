@@ -97,3 +97,9 @@ No command provides P4 firmware flashing, arbitrary memory access, file deletion
 ## Schema-5 extended records
 
 The version-4 wire layout remains unchanged. [Schema 5](RECORD-SCHEMA-5.md) adds identity exchange, indexed history recovery, clock observations and acknowledged GPS companion writes through the existing encrypted control service. The `ram` CSV command now uses `offset` / `next` / `eof` pagination.
+
+### Discovery and pairing recovery
+
+Use the Muon app detector picker or a BLE scanner such as nRF Connect; the general macOS/iOS Bluetooth Settings list is not a reliable discovery surface for this custom GATT service. Only one central can connect at once. Disconnect the phone app before connecting from the Mac; forgetting its bond is unnecessary. Allow several 15-second advertising windows for discovery.
+
+When a previously bonded central requests fresh pairing (for example after Forget This Device), firmware replaces only that peer’s stored bond and retries. It rejects weaker security parameters and retains encrypted control requirements. Other peers, SD records and configuration are preserved. Just Works still does not provide owner authentication.
