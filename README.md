@@ -9,7 +9,7 @@ ESP-IDF firmware and a native iPhone companion for a gLOWCOST/MPPC cosmic-muon d
 - **Resumable recovery and GPS on SD:** the [iOS 2.1 app](https://github.com/muonTelescope/gLowCost-iOs) recovers verified records across reconnects/reboots and uploads GPS or explicitly assigned stationary locations to a separate SD companion file. Detector measurements remain immutable.
 - **Temperature compensation stays in physics data**, flagged with the DAC changes. HV/Wi-Fi/manual-DAC transitions still restart qualification.
 
-See the [schema, protocol, examples and limits](docs/RECORD-SCHEMA-5.md). Unsupported fourfold and physical HV readback are blank, not fabricated. Host tests and builds pass; this update has **not been flashed**, and end-to-end schema-5 testing on the detector/iPhone remains pending. The bundled `MuonMonitor/` source and screenshots below are the earlier companion; use the separate iOS repository for the current app.
+See the [schema, protocol, examples and limits](docs/RECORD-SCHEMA-5.md). Unsupported fourfold and physical HV readback are blank, not fabricated. Host tests and builds pass. Schema 5 is flashed and boot/SD status/live telemetry checks pass; encrypted schema-5 transfers and end-to-end iPhone testing remain pending. Firmware `e386c09` adds recovery when a previously bonded central forgets the device. The bundled `MuonMonitor/` source and screenshots below are the earlier companion; use the separate iOS repository for the current app.
 
 ## New features
 
